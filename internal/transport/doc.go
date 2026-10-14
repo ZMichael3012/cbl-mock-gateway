@@ -1,3 +1,3 @@
-// Пакет transport содержит транспортный слой сервиса mock-gateway:
-// HTTP-хендлеры Gin и gRPC-обработчики, собранные из usecase.
+// Пакет transport содержит HTTP-слой сервиса mock-gateway:
+// эмуляцию API провайдера и управление сценариями сбоев.
 package transport
