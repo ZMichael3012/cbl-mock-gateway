@@ -17,16 +17,16 @@ import (
 	"github.com/cbl/cbl-mock-gateway/internal/usecase"
 )
 
-// maxBodyBytes задает предельный размер тела запроса (NFR CBL-3.6).
+// maxBodyBytes sets the request body size limit (CBL-3.6 NFR).
 const maxBodyBytes int64 = 64 << 10
 
-// Server обслуживает API mock-провайдера.
+// Server serves the mock provider API.
 type Server struct {
 	svc *usecase.Service
 	log *zap.Logger
 }
 
-// NewServer создает Server.
+// NewServer creates a Server.
 func NewServer(svc *usecase.Service, log *zap.Logger) *Server {
 	if log == nil {
 		log = zap.NewNop()
@@ -34,7 +34,7 @@ func NewServer(svc *usecase.Service, log *zap.Logger) *Server {
 	return &Server{svc: svc, log: log}
 }
 
-// Register регистрирует маршруты API с лимитом размера тела.
+// Register registers the API routes with the body size limit.
 func (s *Server) Register(router gin.IRouter) {
 	router.Use(limitBody())
 	router.POST("/api/v1/invoices", s.createInvoice)
@@ -46,7 +46,7 @@ func (s *Server) Register(router gin.IRouter) {
 	router.POST("/api/v1/scenarios/reset", s.resetScenario)
 }
 
-// limitBody ограничивает чтение тела запроса; превышение дает 413 на чтении.
+// limitBody limits request body reads; an overflow yields 413 on read.
 func limitBody() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.Body != nil {
@@ -56,7 +56,7 @@ func limitBody() gin.HandlerFunc {
 	}
 }
 
-// bindJSON строго разбирает тело: отказ неизвестных полей и trailing-данных.
+// bindJSON strictly parses the body: unknown fields and trailing data are rejected.
 func bindJSON(c *gin.Context, dst any) error {
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
@@ -69,14 +69,14 @@ func bindJSON(c *gin.Context, dst any) error {
 	return nil
 }
 
-// moneyDTO описывает сумму в JSON.
+// moneyDTO describes an amount in JSON.
 type moneyDTO struct {
 	MinorUnits int64  `json:"minor_units"`
 	Asset      string `json:"asset"`
 	Decimals   uint32 `json:"decimals"`
 }
 
-// createInvoiceRequest описывает тело запроса создания счета.
+// createInvoiceRequest describes the invoice creation request body.
 type createInvoiceRequest struct {
 	PaymentID string   `json:"payment_id"`
 	Amount    moneyDTO `json:"amount"`
@@ -84,7 +84,7 @@ type createInvoiceRequest struct {
 	ExpiresAt string   `json:"expires_at"`
 }
 
-// invoiceResponse описывает ответ со счетом.
+// invoiceResponse describes the invoice response.
 type invoiceResponse struct {
 	GatewayID      string   `json:"gateway_id"`
 	PaymentID      string   `json:"payment_id"`
@@ -101,7 +101,7 @@ type invoiceResponse struct {
 	Replayed       bool     `json:"replayed"`
 }
 
-// simulateRequest описывает тело запроса генерации вебхука.
+// simulateRequest describes the webhook generation request body.
 type simulateRequest struct {
 	GatewayID      string    `json:"gateway_id"`
 	Status         string    `json:"status"`
@@ -114,7 +114,7 @@ type simulateRequest struct {
 	Signature      string    `json:"signature"`
 }
 
-// deliveryDTO описывает результат одной доставки.
+// deliveryDTO describes the result of a single delivery.
 type deliveryDTO struct {
 	SentAt     string `json:"sent_at"`
 	HTTPStatus int    `json:"http_status"`
@@ -122,13 +122,13 @@ type deliveryDTO struct {
 	Error      string `json:"error,omitempty"`
 }
 
-// simulateResponse описывает результат simulate.
+// simulateResponse describes the simulate result.
 type simulateResponse struct {
 	EventID    string        `json:"event_id"`
 	Deliveries []deliveryDTO `json:"deliveries"`
 }
 
-// deliveryLogDTO описывает запись журнала отправок.
+// deliveryLogDTO describes a delivery log entry.
 type deliveryLogDTO struct {
 	EventID    string `json:"event_id"`
 	GatewayID  string `json:"gateway_id"`
@@ -139,19 +139,19 @@ type deliveryLogDTO struct {
 	Error      string `json:"error,omitempty"`
 }
 
-// scenarioRequest описывает тело запроса сценария сбоя.
+// scenarioRequest describes the failure scenario request body.
 type scenarioRequest struct {
 	FailNext  int `json:"fail_next"`
 	LatencyMS int `json:"latency_ms"`
 }
 
-// scenarioResponse описывает текущий сценарий.
+// scenarioResponse describes the current scenario.
 type scenarioResponse struct {
 	FailNext  int `json:"fail_next"`
 	LatencyMS int `json:"latency_ms"`
 }
 
-// createInvoice обрабатывает создание счета провайдера.
+// createInvoice handles provider invoice creation.
 func (s *Server) createInvoice(c *gin.Context) {
 	var request createInvoiceRequest
 	if err := bindJSON(c, &request); err != nil {
@@ -185,7 +185,7 @@ func (s *Server) createInvoice(c *gin.Context) {
 	c.JSON(status, toInvoiceResponse(invoice, replayed))
 }
 
-// getInvoice возвращает счет по идентификатору провайдера.
+// getInvoice returns an invoice by the provider identifier.
 func (s *Server) getInvoice(c *gin.Context) {
 	invoice, err := s.svc.GetInvoice(c.Request.Context(), c.Param("gateway_id"))
 	if err != nil {
@@ -195,7 +195,7 @@ func (s *Server) getInvoice(c *gin.Context) {
 	c.JSON(http.StatusOK, toInvoiceResponse(invoice, false))
 }
 
-// simulate обновляет счет и отправляет вебхуки.
+// simulate updates the invoice and sends webhooks.
 func (s *Server) simulate(c *gin.Context) {
 	var request simulateRequest
 	if err := bindJSON(c, &request); err != nil {
@@ -252,7 +252,7 @@ func (s *Server) simulate(c *gin.Context) {
 	c.JSON(http.StatusOK, simulateResponse{EventID: result.EventID, Deliveries: deliveries})
 }
 
-// listWebhooks возвращает журнал отправок.
+// listWebhooks returns the delivery log.
 func (s *Server) listWebhooks(c *gin.Context) {
 	deliveries := s.svc.ListDeliveries()
 	response := make([]deliveryLogDTO, 0, len(deliveries))
@@ -270,13 +270,13 @@ func (s *Server) listWebhooks(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"webhooks": response})
 }
 
-// getScenario возвращает текущий сценарий сбоя.
+// getScenario returns the current failure scenario.
 func (s *Server) getScenario(c *gin.Context) {
 	scenario := s.svc.GetScenario()
 	c.JSON(http.StatusOK, scenarioResponse{FailNext: scenario.FailNext, LatencyMS: scenario.LatencyMS})
 }
 
-// setScenario задает сценарий сбоя API провайдера.
+// setScenario sets the provider API failure scenario.
 func (s *Server) setScenario(c *gin.Context) {
 	var request scenarioRequest
 	if err := bindJSON(c, &request); err != nil {
@@ -291,13 +291,13 @@ func (s *Server) setScenario(c *gin.Context) {
 	c.JSON(http.StatusOK, scenarioResponse{FailNext: scenario.FailNext, LatencyMS: scenario.LatencyMS})
 }
 
-// resetScenario сбрасывает сценарий сбоя.
+// resetScenario resets the failure scenario.
 func (s *Server) resetScenario(c *gin.Context) {
 	s.svc.ResetScenario()
 	c.JSON(http.StatusOK, scenarioResponse{})
 }
 
-// mapError переводит доменные ошибки в problem+json.
+// mapError converts domain errors into problem+json.
 func (s *Server) mapError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, domain.ErrInvalidRequest):
@@ -314,8 +314,8 @@ func (s *Server) mapError(c *gin.Context, err error) {
 	}
 }
 
-// abortBind отвечает на ошибку разбора тела: 413 при превышении лимита,
-// иначе 400 с problem+json.
+// abortBind answers a body parse error: 413 when the limit is exceeded,
+// otherwise 400 with problem+json.
 func (s *Server) abortBind(c *gin.Context, err error) {
 	var maxErr *http.MaxBytesError
 	if errors.As(err, &maxErr) {
@@ -325,12 +325,12 @@ func (s *Server) abortBind(c *gin.Context, err error) {
 	s.abort(c, http.StatusBadRequest, "invalid_json", "Bad Request", "тело запроса не разобрано")
 }
 
-// abort отвечает problem+json с заданным статусом.
+// abort answers with problem+json using the given status.
 func (s *Server) abort(c *gin.Context, status int, code, title, detail string) {
 	ginmw.AbortWithProblem(c, status, code, title, detail)
 }
 
-// toInvoiceResponse переводит доменный счет в ответ API.
+// toInvoiceResponse converts a domain invoice into the API response.
 func toInvoiceResponse(invoice domain.Invoice, replayed bool) invoiceResponse {
 	response := invoiceResponse{
 		GatewayID: invoice.GatewayID,

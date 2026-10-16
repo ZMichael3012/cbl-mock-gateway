@@ -1,5 +1,5 @@
-# Контекст сборки: каталог services/ (нужен для replace на ../cbl-kit).
-# Сборка: docker build -f cbl-mock-gateway/Dockerfile -t cbl/mock-gateway:dev .
+# Build context: the services/ directory (needed for the replace to ../cbl-kit).
+# Build: docker build -f cbl-mock-gateway/Dockerfile -t cbl/mock-gateway:dev .
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY cbl-kit/ /src/cbl-kit/

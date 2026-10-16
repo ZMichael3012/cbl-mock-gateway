@@ -13,10 +13,10 @@ import (
 	"github.com/cbl/cbl-mock-gateway/internal/domain"
 )
 
-// testPaymentID задает UUID платежа для тестов.
+// testPaymentID sets the payment UUID for tests.
 const testPaymentID = "01a138fd-0000-7000-8000-000000000001"
 
-// validCreateRequest собирает корректный запрос создания счета.
+// validCreateRequest builds a valid invoice creation request.
 func validCreateRequest() domain.CreateInvoiceRequest {
 	return domain.CreateInvoiceRequest{
 		IdempotencyKey: "key-1",

@@ -11,42 +11,42 @@ import (
 	"github.com/cbl/cbl-kit/money"
 )
 
-// Ошибки домена mock-gateway.
+// Domain errors of the mock-gateway.
 var (
-	// ErrInvalidRequest сообщает о некорректном запросе.
+	// ErrInvalidRequest reports an invalid request.
 	ErrInvalidRequest = errors.New("mock-gateway: invalid request")
-	// ErrInvoiceNotFound сообщает о неизвестном счете mock-провайдера.
+	// ErrInvoiceNotFound reports an unknown mock provider invoice.
 	ErrInvoiceNotFound = errors.New("mock-gateway: invoice not found")
-	// ErrInjectedFailure сообщает о сценарии сбоя провайдера.
+	// ErrInjectedFailure reports an injected provider failure scenario.
 	ErrInjectedFailure = errors.New("mock-gateway: injected provider failure")
-	// ErrStoreFull сообщает о переполнении in-memory хранилища счетов.
+	// ErrStoreFull reports an in-memory invoice store overflow.
 	ErrStoreFull = errors.New("mock-gateway: invoice store is full")
 )
 
-// Status описывает статус счета и события mock-провайдера.
+// Status describes the status of a mock provider invoice and event.
 type Status string
 
-// Статусы счетов и событий mock-провайдера.
+// Invoice and event statuses of the mock provider.
 const (
-	// StatusPending описывает созданный, но не оплаченный счет.
+	// StatusPending describes a created but unpaid invoice.
 	StatusPending Status = "pending"
-	// StatusDetected описывает обнаруженную оплату.
+	// StatusDetected describes a detected payment.
 	StatusDetected Status = "detected"
-	// StatusConfirmed описывает подтвержденную оплату.
+	// StatusConfirmed describes a confirmed payment.
 	StatusConfirmed Status = "confirmed"
-	// StatusFailed описывает неуспешную оплату.
+	// StatusFailed describes a failed payment.
 	StatusFailed Status = "failed"
-	// StatusExpired описывает истечение счета.
+	// StatusExpired describes an expired invoice.
 	StatusExpired Status = "expired"
-	// StatusUnderpaid описывает недоплату.
+	// StatusUnderpaid describes an underpayment.
 	StatusUnderpaid Status = "underpaid"
-	// StatusOverpaid описывает переплату.
+	// StatusOverpaid describes an overpayment.
 	StatusOverpaid Status = "overpaid"
 )
 
-// statusAliases сопоставляет строки simulate каноническим статусам события,
-// повторяя таблицу псевдонимов коннектора (CBL-3.1), чтобы тесты могли
-// оперировать провайдерскими формулировками.
+// statusAliases maps simulate strings to canonical event statuses,
+// repeating the connector alias table (CBL-3.1) so that tests can
+// use provider wording.
 var statusAliases = map[string]Status{
 	"detected":  StatusDetected,
 	"pending":   StatusDetected,
@@ -61,7 +61,7 @@ var statusAliases = map[string]Status{
 	"overpaid":  StatusOverpaid,
 }
 
-// CanonicalStatus переводит строку статуса simulate в канонический статус события.
+// CanonicalStatus converts a simulate status string into a canonical event status.
 func CanonicalStatus(raw string) (Status, error) {
 	status, ok := statusAliases[strings.ToLower(strings.TrimSpace(raw))]
 	if !ok {
@@ -70,20 +70,20 @@ func CanonicalStatus(raw string) (Status, error) {
 	return status, nil
 }
 
-// SignatureMode описывает режим подписи вебхука для сценариев сбоев.
+// SignatureMode describes the webhook signature mode for failure scenarios.
 type SignatureMode string
 
-// Режимы подписи вебхука.
+// Webhook signature modes.
 const (
-	// SignatureValid задает корректную подпись.
+	// SignatureValid sets a correct signature.
 	SignatureValid SignatureMode = "valid"
-	// SignatureInvalid задает испорченную подпись.
+	// SignatureInvalid sets a corrupted signature.
 	SignatureInvalid SignatureMode = "invalid"
-	// SignatureMissing задает отсутствие заголовка подписи.
+	// SignatureMissing sets a missing signature header.
 	SignatureMissing SignatureMode = "missing"
 )
 
-// NormalizeSignature переводит строку режима подписи в значение; пусто - valid.
+// NormalizeSignature converts a signature mode string into a value; empty means valid.
 func NormalizeSignature(raw string) (SignatureMode, error) {
 	trimmed := strings.ToLower(strings.TrimSpace(raw))
 	if trimmed == "" {
@@ -97,8 +97,8 @@ func NormalizeSignature(raw string) (SignatureMode, error) {
 	}
 }
 
-// Ограничения полей mock-провайдера: сценарии ограничены бюджетами обработчика
-// (WriteTimeout) и лимитом тела запроса (NFR спеки).
+// Mock provider field limits: scenarios are bounded by handler budgets
+// (WriteTimeout) and the request body limit (spec NFR).
 const (
 	maxAssetLen   = 16
 	minAssetLen   = 2
@@ -110,21 +110,21 @@ const (
 	maxDelayMS    = 5_000
 )
 
-// CreateInvoiceRequest описывает запрос создания счета.
+// CreateInvoiceRequest describes an invoice creation request.
 type CreateInvoiceRequest struct {
-	// IdempotencyKey задает ключ идемпотентности вызова.
+	// IdempotencyKey sets the idempotency key of the call.
 	IdempotencyKey string
-	// PaymentID задает платеж платформы.
+	// PaymentID sets the platform payment.
 	PaymentID string
-	// Amount задает сумму счета.
+	// Amount sets the invoice amount.
 	Amount money.Money
-	// Network задает сеть оплаты.
+	// Network sets the payment network.
 	Network string
-	// ExpiresAt задает срок действия счета.
+	// ExpiresAt sets the invoice expiration time.
 	ExpiresAt time.Time
 }
 
-// Validate проверяет обязательные поля запроса создания счета.
+// Validate checks the required fields of the invoice creation request.
 func (r CreateInvoiceRequest) Validate() error {
 	if _, err := uuid.Parse(strings.TrimSpace(r.PaymentID)); err != nil {
 		return fmt.Errorf("%w: payment_id must be uuid", ErrInvalidRequest)
@@ -147,57 +147,57 @@ func (r CreateInvoiceRequest) Validate() error {
 	return nil
 }
 
-// Invoice описывает счет mock-провайдера.
+// Invoice describes a mock provider invoice.
 type Invoice struct {
-	// GatewayID задает идентификатор счета у провайдера.
+	// GatewayID sets the provider invoice identifier.
 	GatewayID string
-	// PaymentID задает платеж платформы.
+	// PaymentID sets the platform payment.
 	PaymentID string
-	// Address задает mock-адрес оплаты.
+	// Address sets the mock payment address.
 	Address string
-	// Network задает сеть оплаты.
+	// Network sets the payment network.
 	Network string
-	// Amount задает ожидаемую сумму счета.
+	// Amount sets the expected invoice amount.
 	Amount money.Money
-	// Status задает текущий статус счета.
+	// Status sets the current invoice status.
 	Status Status
-	// ReceivedAmount задает полученную сумму.
+	// ReceivedAmount sets the received amount.
 	ReceivedAmount money.Money
-	// Confirmations задает глубину подтверждений.
+	// Confirmations sets the confirmation depth.
 	Confirmations uint32
-	// TXID задает хеш последней транзакции.
+	// TXID sets the hash of the last transaction.
 	TXID string
-	// EventTS задает время последнего события.
+	// EventTS sets the time of the last event.
 	EventTS time.Time
-	// ExpiresAt задает срок действия счета.
+	// ExpiresAt sets the invoice expiration time.
 	ExpiresAt time.Time
-	// CreatedAt задает время создания счета.
+	// CreatedAt sets the invoice creation time.
 	CreatedAt time.Time
 }
 
-// SimulateRequest описывает запрос генерации вебхука.
+// SimulateRequest describes a webhook generation request.
 type SimulateRequest struct {
-	// GatewayID задает счет, по которому отправляется событие.
+	// GatewayID sets the invoice the event is sent for.
 	GatewayID string
-	// Status задает статус события (канонический или псевдоним).
+	// Status sets the event status (canonical or alias).
 	Status string
-	// ReceivedAmount задает полученную сумму; nil - сумма счета.
+	// ReceivedAmount sets the received amount; nil means the invoice amount.
 	ReceivedAmount *money.Money
-	// Confirmations задает глубину подтверждений.
+	// Confirmations sets the confirmation depth.
 	Confirmations uint32
-	// TXID задает хеш транзакции.
+	// TXID sets the transaction hash.
 	TXID string
-	// EventTS задает время события; nil - текущее время.
+	// EventTS sets the event time; nil means the current time.
 	EventTS *time.Time
-	// DelayMS задает задержку отправки в миллисекундах.
+	// DelayMS sets the send delay in milliseconds.
 	DelayMS int
-	// Duplicate задает число отправок события; 0 - одна.
+	// Duplicate sets the number of event sends; 0 means one.
 	Duplicate int
-	// Signature задает режим подписи.
+	// Signature sets the signature mode.
 	Signature SignatureMode
 }
 
-// Validate проверяет поля запроса генерации вебхука.
+// Validate checks the fields of the webhook generation request.
 func (r SimulateRequest) Validate() error {
 	if strings.TrimSpace(r.GatewayID) == "" {
 		return fmt.Errorf("%w: empty gateway_id", ErrInvalidRequest)
@@ -231,15 +231,15 @@ func (r SimulateRequest) Validate() error {
 	return nil
 }
 
-// Scenario описывает сценарий сбоя API провайдера.
+// Scenario describes a provider API failure scenario.
 type Scenario struct {
-	// FailNext задает число следующих вызовов, отвечающих ошибкой 503.
+	// FailNext sets the number of following calls that answer with a 503 error.
 	FailNext int
-	// LatencyMS задает добавляемую задержку ответа.
+	// LatencyMS sets the added response latency.
 	LatencyMS int
 }
 
-// Validate проверяет параметры сценария.
+// Validate checks the scenario parameters.
 func (s Scenario) Validate() error {
 	if s.FailNext < 0 || s.FailNext > maxFailNext {
 		return fmt.Errorf("%w: fail_next out of range", ErrInvalidRequest)
@@ -250,25 +250,25 @@ func (s Scenario) Validate() error {
 	return nil
 }
 
-// WebhookDelivery описывает запись журнала отправки вебхука.
+// WebhookDelivery describes a webhook delivery log entry.
 type WebhookDelivery struct {
-	// EventID задает идентификатор события вебхука.
+	// EventID sets the webhook event identifier.
 	EventID string
-	// GatewayID задает счет провайдера.
+	// GatewayID sets the provider invoice.
 	GatewayID string
-	// Status задает статус события.
+	// Status sets the event status.
 	Status Status
-	// Mode задает режим подписи.
+	// Mode sets the signature mode.
 	Mode SignatureMode
-	// SentAt задает время отправки.
+	// SentAt sets the send time.
 	SentAt time.Time
-	// HTTPStatus задает код ответа получателя; 0 - сетевой сбой.
+	// HTTPStatus sets the receiver response code; 0 means a network failure.
 	HTTPStatus int
-	// Error задает текст ошибки доставки.
+	// Error sets the delivery error text.
 	Error string
 }
 
-// validCode проверяет код (актив, сеть): латиница, цифры, дефис и подчеркивание.
+// validCode checks a code (asset, network): Latin letters, digits, hyphen and underscore.
 func validCode(value string, minLen, maxLen int) bool {
 	if len(value) < minLen || len(value) > maxLen {
 		return false

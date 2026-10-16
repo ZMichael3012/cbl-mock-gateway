@@ -1,5 +1,5 @@
-// main запускает HTTP-сервис mock-gateway платформы CBL:
-// эмуляцию sandbox-провайдера и отправку подписанных вебхуков.
+// main starts the HTTP service of the CBL platform mock-gateway:
+// the sandbox provider emulation and signed webhook delivery.
 package main
 
 import (
@@ -22,8 +22,8 @@ import (
 	"github.com/cbl/cbl-mock-gateway/internal/webhook"
 )
 
-// main поднимает HTTP-сервер mock-провайдера и сервер метрик;
-// завершает работу по SIGINT/SIGTERM.
+// main starts the mock provider HTTP server and the metrics server;
+// it shuts down on SIGINT/SIGTERM.
 func main() {
 	log, err := zap.NewProduction()
 	if err != nil {
@@ -68,8 +68,8 @@ func main() {
 		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		// Бюджет обработки покрывает худший сценарий simulate:
-		// latency 5с + delay 5с + 10 доставок по WEBHOOK_TIMEOUT (5с).
+		// The processing budget covers the worst simulate scenario:
+		// latency 5s + delay 5s + 10 deliveries at WEBHOOK_TIMEOUT (5s).
 		WriteTimeout: 75 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
@@ -103,7 +103,7 @@ func main() {
 	log.Info("shutdown finished")
 }
 
-// metricsHandler отдает заглушку метрик до задачи 0.7.
+// metricsHandler serves a metrics stub until task 0.7.
 func metricsHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
@@ -113,7 +113,7 @@ func metricsHandler() http.Handler {
 	return mux
 }
 
-// getenv возвращает значение переменной окружения или значение по умолчанию.
+// getenv returns the environment variable value or the default value.
 func getenv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -121,8 +121,8 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
-// durationEnv читает длительность из переменной окружения;
-// невалидное значение заменяется значением по умолчанию с предупреждением.
+// durationEnv reads a duration from an environment variable;
+// an invalid value falls back to the default with a warning.
 func durationEnv(log *zap.Logger, key string, fallback time.Duration) time.Duration {
 	raw := os.Getenv(key)
 	if raw == "" {

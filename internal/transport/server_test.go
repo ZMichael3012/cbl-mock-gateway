@@ -19,16 +19,16 @@ import (
 	"github.com/cbl/cbl-mock-gateway/internal/usecase"
 )
 
-// testPaymentID задает UUID платежа для тестов транспорта.
+// testPaymentID sets the payment UUID for transport tests.
 const testPaymentID = "01a138fd-0000-7000-8000-000000000003"
 
-// fakeSender запоминает вебхуки и возвращает успешную доставку.
+// fakeSender records webhooks and returns a successful delivery.
 type fakeSender struct {
 	mu     sync.Mutex
 	events int
 }
 
-// Send учитывает отправку и возвращает успех.
+// Send counts the send and returns success.
 func (s *fakeSender) Send(_ context.Context, _ usecase.WebhookEvent) usecase.Delivery {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -36,7 +36,7 @@ func (s *fakeSender) Send(_ context.Context, _ usecase.WebhookEvent) usecase.Del
 	return usecase.Delivery{HTTPStatus: 200, SentAt: time.Now().UTC()}
 }
 
-// newRouter собирает маршрутизатор с реальным сервисом и fake-отправителем.
+// newRouter builds a router with the real service and a fake sender.
 func newRouter(t *testing.T) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -46,7 +46,7 @@ func newRouter(t *testing.T) *gin.Engine {
 	return router
 }
 
-// doJSON выполняет запрос к роутеру.
+// doJSON performs a request against the router.
 func doJSON(router *gin.Engine, method, path, body string, headers map[string]string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
@@ -58,13 +58,13 @@ func doJSON(router *gin.Engine, method, path, body string, headers map[string]st
 	return recorder
 }
 
-// createBody собирает тело создания счета.
+// createBody builds the invoice creation body.
 func createBody() string {
 	return `{"payment_id":"` + testPaymentID + `","amount":{"minor_units":100000,"asset":"USDT","decimals":2},` +
 		`"network":"trc20","expires_at":"2026-10-14T13:00:00Z"}`
 }
 
-// decodeInvoice читает gateway_id из ответа.
+// decodeInvoice reads gateway_id from the response.
 func decodeInvoice(t *testing.T, recorder *httptest.ResponseRecorder) string {
 	t.Helper()
 	var response struct {
@@ -98,10 +98,10 @@ func TestHTTPValidationErrors(t *testing.T) {
 
 	unknownField := doJSON(router, http.MethodPost, "/api/v1/invoices",
 		`{"payment_id":"`+testPaymentID+`","amount":{"minor_units":1,"asset":"USDT","decimals":2},"network":"trc20","expires_at":"2026-10-14T13:00:00Z","surprise":1}`, nil)
-	require.Equal(t, http.StatusBadRequest, unknownField.Code, "неизвестные поля запрещены")
+	require.Equal(t, http.StatusBadRequest, unknownField.Code, "unknown fields are rejected")
 
 	trailing := doJSON(router, http.MethodPost, "/api/v1/invoices", createBody()+`{"extra":true}`, nil)
-	require.Equal(t, http.StatusBadRequest, trailing.Code, "trailing json запрещен")
+	require.Equal(t, http.StatusBadRequest, trailing.Code, "trailing json is rejected")
 
 	badPayment := doJSON(router, http.MethodPost, "/api/v1/invoices",
 		`{"payment_id":"pay-1","amount":{"minor_units":1,"asset":"USDT","decimals":2},"network":"trc20","expires_at":"2026-10-14T13:00:00Z"}`, nil)

@@ -1,3 +1,3 @@
-// Пакет storage не используется сервисом mock-gateway:
-// состояние стенда хранится in-memory в usecase (T-MOCK-01).
+// Package storage is not used by the mock-gateway service:
+// the stand state is stored in-memory in usecase (T-MOCK-01).
 package storage

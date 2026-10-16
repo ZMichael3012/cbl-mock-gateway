@@ -15,67 +15,67 @@ import (
 	"github.com/cbl/cbl-mock-gateway/internal/domain"
 )
 
-// deliveriesLimit задает предельный размер журнала отправок.
+// deliveriesLimit sets the maximum size of the delivery log.
 const deliveriesLimit = 100
 
-// maxInvoices задает предел числа счетов в in-memory хранилище:
-// неаутентифицированный стенд не должен расти без предела (review 3.6).
+// maxInvoices sets the invoice count limit of the in-memory store:
+// the unauthenticated stand must not grow without bound (review 3.6).
 const maxInvoices = 1000
 
-// simulateSendBudget задает бюджет фоновых доставок simulate: вебхук обязан
-// уйти даже при обрыве клиента, но не может висеть бесконечно.
+// simulateSendBudget sets the budget of simulate background deliveries: the webhook must
+// be sent even when the client disconnects, but it must not hang forever.
 const simulateSendBudget = 90 * time.Second
 
-// WebhookEvent описывает вебхук mock-провайдера для отправки в Webhook Ingress.
+// WebhookEvent describes a mock provider webhook to be sent to Webhook Ingress.
 type WebhookEvent struct {
-	// EventID задает идентификатор события; повторные доставки используют тот же id.
+	// EventID sets the event identifier; repeated deliveries use the same id.
 	EventID string
-	// PaymentID задает платеж платформы.
+	// PaymentID sets the platform payment.
 	PaymentID string
-	// GatewayID задает счет провайдера.
+	// GatewayID sets the provider invoice.
 	GatewayID string
-	// Status задает канонический статус события.
+	// Status sets the canonical event status.
 	Status domain.Status
-	// ReceivedAmount задает полученную сумму.
+	// ReceivedAmount sets the received amount.
 	ReceivedAmount money.Money
-	// Confirmations задает глубину подтверждений.
+	// Confirmations sets the confirmation depth.
 	Confirmations uint32
-	// TXID задает хеш транзакции.
+	// TXID sets the transaction hash.
 	TXID string
-	// Network задает сеть оплаты.
+	// Network sets the payment network.
 	Network string
-	// EventTS задает время события у провайдера.
+	// EventTS sets the event time at the provider.
 	EventTS time.Time
-	// Mode задает режим подписи для сценариев сбоев.
+	// Mode sets the signature mode for failure scenarios.
 	Mode domain.SignatureMode
 }
 
-// Delivery описывает результат отправки вебхука.
+// Delivery describes the result of a webhook send.
 type Delivery struct {
-	// SentAt задает время отправки.
+	// SentAt sets the send time.
 	SentAt time.Time
-	// HTTPStatus задает код ответа получателя; 0 - сетевой сбой.
+	// HTTPStatus sets the receiver response code; 0 means a network failure.
 	HTTPStatus int
-	// Error задает текст ошибки доставки.
+	// Error sets the delivery error text.
 	Error string
 }
 
-// WebhookSender отправляет вебхук получателю (Webhook Ingress).
+// WebhookSender sends a webhook to the receiver (Webhook Ingress).
 type WebhookSender interface {
-	// Send подписывает и отправляет событие, возвращая результат доставки.
+	// Send signs and sends the event, returning the delivery result.
 	Send(ctx context.Context, event WebhookEvent) Delivery
 }
 
-// SimulateResult описывает результат simulate: идентификатор события и доставки.
+// SimulateResult describes the simulate result: the event identifier and the deliveries.
 type SimulateResult struct {
-	// EventID задает идентификатор сгенерированного события.
+	// EventID sets the identifier of the generated event.
 	EventID string
-	// Deliveries задает результаты всех отправок.
+	// Deliveries sets the results of all sends.
 	Deliveries []Delivery
 }
 
-// Service хранит счета mock-провайдера, сценарии и журнал отправок.
-// Состояние in-memory: сервис детерминированно пересоздается в тестах.
+// Service stores mock provider invoices, scenarios and the delivery log.
+// The state is in-memory: the service is deterministically recreated in tests.
 type Service struct {
 	mu         sync.Mutex
 	sender     WebhookSender
@@ -87,10 +87,10 @@ type Service struct {
 	log        *zap.Logger
 }
 
-// Option настраивает Service.
+// Option configures Service.
 type Option func(*Service)
 
-// WithClock задает источник времени; используется тестами.
+// WithClock sets the time source; used by tests.
 func WithClock(clock func() time.Time) Option {
 	return func(s *Service) {
 		if clock != nil {
@@ -99,7 +99,7 @@ func WithClock(clock func() time.Time) Option {
 	}
 }
 
-// NewService создает Service поверх отправителя вебхуков.
+// NewService creates a Service on top of the webhook sender.
 func NewService(sender WebhookSender, log *zap.Logger, opts ...Option) *Service {
 	if log == nil {
 		log = zap.NewNop()
@@ -117,7 +117,7 @@ func NewService(sender WebhookSender, log *zap.Logger, opts ...Option) *Service 
 	return service
 }
 
-// CreateInvoice создает счет; повтор с тем же Idempotency-Key возвращает исходный счет.
+// CreateInvoice creates an invoice; a repeat with the same Idempotency-Key returns the original invoice.
 func (s *Service) CreateInvoice(ctx context.Context, req domain.CreateInvoiceRequest) (domain.Invoice, bool, error) {
 	if err := req.Validate(); err != nil {
 		return domain.Invoice{}, false, err
@@ -166,7 +166,7 @@ func (s *Service) CreateInvoice(ctx context.Context, req domain.CreateInvoiceReq
 	return invoice, false, nil
 }
 
-// GetInvoice возвращает счет по идентификатору провайдера.
+// GetInvoice returns an invoice by the provider identifier.
 func (s *Service) GetInvoice(ctx context.Context, gatewayID string) (domain.Invoice, error) {
 	if err := s.applyScenario(ctx); err != nil {
 		return domain.Invoice{}, err
@@ -180,7 +180,7 @@ func (s *Service) GetInvoice(ctx context.Context, gatewayID string) (domain.Invo
 	return invoice, nil
 }
 
-// Simulate обновляет состояние счета и отправляет вебхук (или несколько дубликатов).
+// Simulate updates the invoice state and sends a webhook (or several duplicates).
 func (s *Service) Simulate(ctx context.Context, req domain.SimulateRequest) (SimulateResult, error) {
 	if err := req.Validate(); err != nil {
 		return SimulateResult{}, err
@@ -229,8 +229,8 @@ func (s *Service) Simulate(ctx context.Context, req domain.SimulateRequest) (Sim
 		EventTS:        eventTS,
 		Mode:           req.Signature,
 	}
-	// Доставка отделена от контекста запроса: задержка и отправка вебхука
-	// должны завершиться даже при обрыве клиента (сценарий delay > timeout).
+	// Delivery is detached from the request context: the delay and the webhook send
+	// must complete even when the client disconnects (delay > timeout scenario).
 	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), simulateSendBudget)
 	defer cancel()
 	if err := waitDelay(sendCtx, req.DelayMS); err != nil {
@@ -258,14 +258,14 @@ func (s *Service) Simulate(ctx context.Context, req domain.SimulateRequest) (Sim
 	return result, nil
 }
 
-// ListDeliveries возвращает копию журнала отправок в порядке отправки.
+// ListDeliveries returns a copy of the delivery log in send order.
 func (s *Service) ListDeliveries() []domain.WebhookDelivery {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]domain.WebhookDelivery(nil), s.deliveries...)
 }
 
-// SetScenario задает сценарий сбоя API провайдера.
+// SetScenario sets the provider API failure scenario.
 func (s *Service) SetScenario(scenario domain.Scenario) error {
 	if err := scenario.Validate(); err != nil {
 		return err
@@ -276,21 +276,21 @@ func (s *Service) SetScenario(scenario domain.Scenario) error {
 	return nil
 }
 
-// GetScenario возвращает текущий сценарий сбоя.
+// GetScenario returns the current failure scenario.
 func (s *Service) GetScenario() domain.Scenario {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.scenario
 }
 
-// ResetScenario сбрасывает сценарий сбоя.
+// ResetScenario resets the failure scenario.
 func (s *Service) ResetScenario() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.scenario = domain.Scenario{}
 }
 
-// applyScenario применяет задержку и внедренный сбой к вызову API провайдера.
+// applyScenario applies the latency and the injected failure to a provider API call.
 func (s *Service) applyScenario(ctx context.Context) error {
 	s.mu.Lock()
 	scenario := s.scenario
@@ -309,7 +309,7 @@ func (s *Service) applyScenario(ctx context.Context) error {
 	return nil
 }
 
-// appendDelivery добавляет запись в журнал, поддерживая предельный размер.
+// appendDelivery adds an entry to the log while keeping the size limit.
 func (s *Service) appendDelivery(delivery domain.WebhookDelivery) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -319,7 +319,7 @@ func (s *Service) appendDelivery(delivery domain.WebhookDelivery) {
 	}
 }
 
-// waitDelay ждет заданное число миллисекунд с учетом отмены контекста.
+// waitDelay waits for the given number of milliseconds respecting context cancellation.
 func waitDelay(ctx context.Context, delayMS int) error {
 	if delayMS <= 0 {
 		return nil
@@ -334,7 +334,7 @@ func waitDelay(ctx context.Context, delayMS int) error {
 	}
 }
 
-// mockAddress строит детерминированный mock-адрес по идентификатору счета.
+// mockAddress builds a deterministic mock address from the invoice identifier.
 func mockAddress(gatewayID string) string {
 	compact := strings.ReplaceAll(gatewayID, "-", "")
 	if len(compact) > 12 {

@@ -17,10 +17,10 @@ import (
 	"github.com/cbl/cbl-mock-gateway/internal/usecase"
 )
 
-// maxResponseBytes задает предельный размер читаемого ответа получателя.
+// maxResponseBytes sets the maximum size of the receiver response that is read.
 const maxResponseBytes = 1 << 10
 
-// HTTPSender отправляет вебхуки HTTP POST с HMAC-подписью kit.
+// HTTPSender sends webhooks as HTTP POST with the kit HMAC signature.
 type HTTPSender struct {
 	client          *http.Client
 	targetURL       string
@@ -30,10 +30,10 @@ type HTTPSender struct {
 	clock           func() time.Time
 }
 
-// Option настраивает HTTPSender.
+// Option configures HTTPSender.
 type Option func(*HTTPSender)
 
-// WithClock задает источник времени для подписи; используется тестами.
+// WithClock sets the time source for the signature; used by tests.
 func WithClock(clock func() time.Time) Option {
 	return func(s *HTTPSender) {
 		if clock != nil {
@@ -42,7 +42,7 @@ func WithClock(clock func() time.Time) Option {
 	}
 }
 
-// NewHTTPSender создает отправитель; timeout по умолчанию 5 секунд.
+// NewHTTPSender creates a sender; the default timeout is 5 seconds.
 func NewHTTPSender(targetURL, secret, signatureHeader, eventIDHeader string, timeout time.Duration, opts ...Option) (*HTTPSender, error) {
 	parsed, err := url.Parse(strings.TrimSpace(targetURL))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
@@ -63,8 +63,8 @@ func NewHTTPSender(targetURL, secret, signatureHeader, eventIDHeader string, tim
 	sender := &HTTPSender{
 		client: &http.Client{
 			Timeout: timeout,
-			// Редиректы не выполняются: цель из env не должна переадресовывать
-			// тело события и подпись на другой хост (review 3.6).
+			// Redirects are not followed: the env target must not forward
+			// the event body and signature to another host (review 3.6).
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -81,7 +81,7 @@ func NewHTTPSender(targetURL, secret, signatureHeader, eventIDHeader string, tim
 	return sender, nil
 }
 
-// webhookBody описывает JSON-тело вебхука по контракту sandbox-провайдера.
+// webhookBody describes the webhook JSON body following the sandbox provider contract.
 type webhookBody struct {
 	PaymentID      string     `json:"payment_id"`
 	GatewayID      string     `json:"gateway_id"`
@@ -93,15 +93,15 @@ type webhookBody struct {
 	EventTS        string     `json:"event_ts"`
 }
 
-// amountBody описывает сумму в минимальных единицах.
+// amountBody describes an amount in minor units.
 type amountBody struct {
 	MinorUnits int64  `json:"minor_units"`
 	Asset      string `json:"asset"`
 	Decimals   uint32 `json:"decimals"`
 }
 
-// Send подписывает и отправляет событие; сетевые ошибки и 4xx/5xx попадают
-// в результат доставки, а не возвращаются ошибкой: simulate всегда отвечает 200.
+// Send signs and sends the event; network errors and 4xx/5xx go
+// into the delivery result instead of being returned as an error: simulate always answers 200.
 func (s *HTTPSender) Send(ctx context.Context, event usecase.WebhookEvent) usecase.Delivery {
 	started := s.clock().UTC()
 	body, err := marshalBody(event)
@@ -125,14 +125,14 @@ func (s *HTTPSender) Send(ctx context.Context, event usecase.WebhookEvent) useca
 	defer func() { _ = response.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxResponseBytes))
 	delivery := usecase.Delivery{SentAt: s.clock().UTC(), HTTPStatus: response.StatusCode}
-	// 3xx считается недоставкой: редиректы не выполняются.
+	// A 3xx is treated as non-delivery: redirects are not followed.
 	if response.StatusCode >= http.StatusMultipleChoices {
 		delivery.Error = fmt.Sprintf("webhook rejected with status %d", response.StatusCode)
 	}
 	return delivery
 }
 
-// buildSignature собирает заголовок подписи по режиму сценария.
+// buildSignature builds the signature header according to the scenario mode.
 func (s *HTTPSender) buildSignature(mode domain.SignatureMode, body []byte) string {
 	if mode == domain.SignatureMissing {
 		return ""
@@ -145,7 +145,7 @@ func (s *HTTPSender) buildSignature(mode domain.SignatureMode, body []byte) stri
 	return hmac.BuildHeader(hmac.Signature{Timestamp: timestamp, Hex: signature})
 }
 
-// marshalBody сериализует событие в JSON-контракт sandbox-провайдера.
+// marshalBody serializes the event into the sandbox provider JSON contract.
 func marshalBody(event usecase.WebhookEvent) ([]byte, error) {
 	body := webhookBody{
 		PaymentID: event.PaymentID,
@@ -168,7 +168,7 @@ func marshalBody(event usecase.WebhookEvent) ([]byte, error) {
 	return payload, nil
 }
 
-// corruptHex портит hex-подпись, сохраняя формат заголовка.
+// corruptHex corrupts the hex signature while preserving the header format.
 func corruptHex(signature string) string {
 	if signature == "" {
 		return signature

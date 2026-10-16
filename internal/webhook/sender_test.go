@@ -27,7 +27,7 @@ const (
 	unitEvent  = "X-Event-Id"
 )
 
-// unitWebhookEvent собирает событие вебхука для тестов.
+// unitWebhookEvent builds a webhook event for tests.
 func unitWebhookEvent(mode domain.SignatureMode) usecase.WebhookEvent {
 	return usecase.WebhookEvent{
 		EventID:        "01a138fd-0000-7000-8000-000000000001",
@@ -43,7 +43,7 @@ func unitWebhookEvent(mode domain.SignatureMode) usecase.WebhookEvent {
 	}
 }
 
-// payloadReader собирает обработчик вебхука, записывающий запрос.
+// payloadReader builds a webhook handler that records the request.
 type payloadReader struct {
 	mu       sync.Mutex
 	body     []byte
@@ -52,7 +52,7 @@ type payloadReader struct {
 	requests int
 }
 
-// ServeHTTP реализует прием вебхука с проверкой подписи.
+// ServeHTTP implements webhook reception with signature verification.
 func (s *payloadReader) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	s.mu.Lock()
@@ -64,7 +64,7 @@ func (s *payloadReader) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// requestCount возвращает число принятых запросов.
+// requestCount returns the number of received requests.
 func (s *payloadReader) requestCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -108,7 +108,7 @@ func TestSendValidSignatureAndContract(t *testing.T) {
 
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
-	assert.True(t, sink.sigOK, "подпись проходит kit hmac.Verify")
+	assert.True(t, sink.sigOK, "the signature passes kit hmac.Verify")
 	assert.Equal(t, "01a138fd-0000-7000-8000-000000000001", sink.eventID)
 
 	var body map[string]any
@@ -136,12 +136,12 @@ func TestSendSignatureModes(t *testing.T) {
 
 	sender.Send(context.Background(), unitWebhookEvent(domain.SignatureInvalid))
 	sink.mu.Lock()
-	assert.False(t, sink.sigOK, "порченная подпись отвергается")
+	assert.False(t, sink.sigOK, "a corrupted signature is rejected")
 	sink.mu.Unlock()
 
 	sender.Send(context.Background(), unitWebhookEvent(domain.SignatureMissing))
 	sink.mu.Lock()
-	assert.False(t, sink.sigOK, "без подписи вебхук отвергается")
+	assert.False(t, sink.sigOK, "a webhook without a signature is rejected")
 	assert.Equal(t, 2, sink.requests)
 	sink.mu.Unlock()
 }
@@ -157,7 +157,7 @@ func TestSendNetworkFailure(t *testing.T) {
 	require.NoError(t, err)
 
 	delivery := sender.Send(context.Background(), unitWebhookEvent(domain.SignatureValid))
-	assert.Zero(t, delivery.HTTPStatus, "сетевой сбой не дает HTTP статус")
+	assert.Zero(t, delivery.HTTPStatus, "a network failure yields no HTTP status")
 	assert.NotEmpty(t, delivery.Error)
 }
 
@@ -179,5 +179,5 @@ func TestSendRedirectNotFollowed(t *testing.T) {
 	delivery := sender.Send(context.Background(), unitWebhookEvent(domain.SignatureValid))
 	assert.Equal(t, http.StatusFound, delivery.HTTPStatus)
 	assert.Contains(t, delivery.Error, "302")
-	assert.Equal(t, 0, redirected.requestCount(), "редирект не выполняется, тело не уходит на другой хост")
+	assert.Equal(t, 0, redirected.requestCount(), "the redirect is not followed, the body is not sent to another host")
 }

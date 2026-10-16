@@ -1,3 +1,3 @@
-// Пакет transport содержит HTTP-слой сервиса mock-gateway:
-// эмуляцию API провайдера и управление сценариями сбоев.
+// Package transport contains the HTTP layer of the mock-gateway service:
+// the provider API emulation and failure scenario management.
 package transport

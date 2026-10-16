@@ -17,17 +17,17 @@ import (
 	"github.com/cbl/cbl-mock-gateway/internal/usecase"
 )
 
-// testPaymentID задает UUID платежа для тестов.
+// testPaymentID sets the payment UUID for tests.
 const testPaymentID = "01a138fd-0000-7000-8000-000000000002"
 
-// fakeSender запоминает отправленные вебхуки и возвращает заданный результат.
+// fakeSender records the sent webhooks and returns the configured result.
 type fakeSender struct {
 	mu       sync.Mutex
 	events   []usecase.WebhookEvent
 	delivery usecase.Delivery
 }
 
-// Send записывает событие и возвращает заранее заданную доставку.
+// Send records the event and returns the preconfigured delivery.
 func (s *fakeSender) Send(_ context.Context, event usecase.WebhookEvent) usecase.Delivery {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -35,21 +35,21 @@ func (s *fakeSender) Send(_ context.Context, event usecase.WebhookEvent) usecase
 	return s.delivery
 }
 
-// eventsCopy возвращает копию отправленных событий.
+// eventsCopy returns a copy of the sent events.
 func (s *fakeSender) eventsCopy() []usecase.WebhookEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]usecase.WebhookEvent(nil), s.events...)
 }
 
-// newService собирает сервис с fake-отправителем.
+// newService builds a service with a fake sender.
 func newService(t *testing.T) (*usecase.Service, *fakeSender) {
 	t.Helper()
 	sender := &fakeSender{delivery: usecase.Delivery{HTTPStatus: 200, SentAt: time.Now().UTC()}}
 	return usecase.NewService(sender, nil), sender
 }
 
-// createInvoice создает счет в тестовом сервисе.
+// createInvoice creates an invoice in the test service.
 func createInvoice(t *testing.T, svc *usecase.Service, key string) domain.Invoice {
 	t.Helper()
 	invoice, _, err := svc.CreateInvoice(context.Background(), domain.CreateInvoiceRequest{
@@ -149,7 +149,7 @@ func TestSimulateUpdatesInvoiceAndDuplicates(t *testing.T) {
 	events := sender.eventsCopy()
 	require.Len(t, events, 3)
 	for _, event := range events {
-		assert.Equal(t, result.EventID, event.EventID, "дубликаты используют тот же event_id")
+		assert.Equal(t, result.EventID, event.EventID, "duplicates use the same event_id")
 		assert.Equal(t, domain.StatusConfirmed, event.Status)
 		assert.Equal(t, int64(100_000), event.ReceivedAmount.MinorUnits)
 		assert.Equal(t, testPaymentID, event.PaymentID)
@@ -182,7 +182,7 @@ func TestSimulateOverrides(t *testing.T) {
 
 	events := sender.eventsCopy()
 	require.Len(t, events, 1)
-	assert.Equal(t, domain.StatusConfirmed, events[0].Status, "псевдоним completed маппится в confirmed")
+	assert.Equal(t, domain.StatusConfirmed, events[0].Status, "the completed alias maps to confirmed")
 	assert.Equal(t, int64(90_000), events[0].ReceivedAmount.MinorUnits)
 	assert.Equal(t, uint32(6), events[0].Confirmations)
 	assert.Equal(t, "0x123", events[0].TXID)
@@ -214,7 +214,7 @@ func TestScenarioFailNext(t *testing.T) {
 	require.ErrorIs(t, err, domain.ErrInjectedFailure)
 
 	_, err = svc.GetInvoice(context.Background(), invoice.GatewayID)
-	require.NoError(t, err, "после исчерпания fail_next API работает")
+	require.NoError(t, err, "the API works after fail_next is exhausted")
 	assert.Equal(t, 0, svc.GetScenario().FailNext)
 }
 
@@ -248,7 +248,7 @@ func TestDeliveriesLogCapped(t *testing.T) {
 	}
 
 	deliveries := svc.ListDeliveries()
-	assert.Len(t, deliveries, 100, "журнал ограничен 100 записями")
+	assert.Len(t, deliveries, 100, "the log is capped at 100 entries")
 	assert.Equal(t, invoice.GatewayID, deliveries[0].GatewayID)
 }
 
@@ -277,7 +277,7 @@ func TestConcurrentInvoicesAndSimulations(t *testing.T) {
 	}
 	wg.Wait()
 
-	assert.Equal(t, int32(10), atomic.LoadInt32(&simulations), "все simulate завершились успешно")
+	assert.Equal(t, int32(10), atomic.LoadInt32(&simulations), "all simulate calls completed successfully")
 	assert.Len(t, sender.eventsCopy(), 10)
 	updated, err := svc.GetInvoice(context.Background(), invoice.GatewayID)
 	require.NoError(t, err)

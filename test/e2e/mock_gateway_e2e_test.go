@@ -1,9 +1,9 @@
 //go:build e2e
 
-// Пакет e2e содержит сквозной сценарий mock-gateway: создание счета,
-// подписанные вебхуки (валидные, дубликаты, порченные), порядок и сценарии
-// сбоев. Получатель проверяет подпись kit hmac и дедуплицирует события так же,
-// как Webhook Ingress.
+// Package e2e contains the mock-gateway end-to-end scenario: invoice creation,
+// signed webhooks (valid, duplicates, corrupted), ordering and failure
+// scenarios. The receiver verifies the kit hmac signature and deduplicates
+// events the same way as Webhook Ingress.
 package e2e
 
 import (
@@ -36,7 +36,7 @@ const (
 	e2ePaymentID = "01a138fd-0000-7000-8000-000000000004"
 )
 
-// sandboxBody описывает тело вебхука по контракту sandbox-провайдера.
+// sandboxBody describes the webhook body under the sandbox provider contract.
 type sandboxBody struct {
 	PaymentID      string `json:"payment_id"`
 	GatewayID      string `json:"gateway_id"`
@@ -52,7 +52,7 @@ type sandboxBody struct {
 	EventTS       string `json:"event_ts"`
 }
 
-// sinkRecord описывает принятый вебхук.
+// sinkRecord describes an accepted webhook.
 type sinkRecord struct {
 	eventID   string
 	verified  bool
@@ -60,7 +60,7 @@ type sinkRecord struct {
 	body      sandboxBody
 }
 
-// sink принимает вебхуки: проверяет подпись и дедуплицирует по event_id.
+// sink accepts webhooks: it verifies the signature and deduplicates by event_id.
 type sink struct {
 	mu      sync.Mutex
 	secret  []byte
@@ -68,7 +68,7 @@ type sink struct {
 	seen    map[string]bool
 }
 
-// ServeHTTP реализует прием вебхука.
+// ServeHTTP implements webhook reception.
 func (s *sink) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
@@ -100,14 +100,14 @@ func (s *sink) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprintf(w, `{"status":"accepted","duplicate":%t}`, duplicate)
 }
 
-// recordsCopy возвращает копию принятых записей.
+// recordsCopy returns a copy of the accepted records.
 func (s *sink) recordsCopy() []sinkRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]sinkRecord(nil), s.records...)
 }
 
-// postJSON выполняет JSON-запрос к стенду.
+// postJSON performs a JSON request against the stand.
 func postJSON(t *testing.T, method, url, body string, headers map[string]string) (int, []byte) {
 	t.Helper()
 	request, err := http.NewRequestWithContext(context.Background(), method, url, strings.NewReader(body))
@@ -124,7 +124,7 @@ func postJSON(t *testing.T, method, url, body string, headers map[string]string)
 	return response.StatusCode, payload
 }
 
-// gatewayIDFrom извлекает gateway_id из ответа.
+// gatewayIDFrom extracts gateway_id from the response.
 func gatewayIDFrom(t *testing.T, payload []byte) string {
 	t.Helper()
 	var response struct {
@@ -153,7 +153,7 @@ func TestE2EMockGatewayWebhookContract(t *testing.T) {
 	createBody := `{"payment_id":"` + e2ePaymentID + `","amount":{"minor_units":100000,"asset":"USDT","decimals":2},` +
 		`"network":"trc20","expires_at":"2026-10-14T13:00:00Z"}`
 
-	// Шаг 1: создание счета и идемпотентный повтор.
+	// Step 1: invoice creation and idempotent replay.
 	status, payload := postJSON(t, http.MethodPost, gatewaySrv.URL+"/api/v1/invoices", createBody, map[string]string{"Idempotency-Key": "e2e-1"})
 	require.Equal(t, http.StatusCreated, status)
 	gatewayID := gatewayIDFrom(t, payload)
@@ -162,8 +162,8 @@ func TestE2EMockGatewayWebhookContract(t *testing.T) {
 	require.Equal(t, http.StatusOK, status)
 	assert.Equal(t, gatewayID, gatewayIDFrom(t, payload))
 
-	// Шаг 2: подтверждение с дубликатом: два принятых вебхука одного события,
-	// подпись валидна, повтор помечен duplicate.
+	// Step 2: confirmation with a duplicate: two accepted webhooks of one event,
+	// the signature is valid, the replay is marked duplicate.
 	status, payload = postJSON(t, http.MethodPost, gatewaySrv.URL+"/api/v1/simulate",
 		`{"gateway_id":"`+gatewayID+`","status":"confirmed","duplicate":2,"txid":"0xabc","confirmations":5}`, nil)
 	require.Equal(t, http.StatusOK, status)
@@ -173,11 +173,11 @@ func TestE2EMockGatewayWebhookContract(t *testing.T) {
 	records := recvr.recordsCopy()
 	require.Len(t, records, 2)
 	first, second := records[0], records[1]
-	assert.True(t, first.verified, "подпись валидна")
-	assert.Equal(t, first.eventID, second.eventID, "дубликаты одного события")
-	assert.Equal(t, first.body, second.body, "дубликаты несут одно тело")
+	assert.True(t, first.verified, "the signature is valid")
+	assert.Equal(t, first.eventID, second.eventID, "duplicates of one event")
+	assert.Equal(t, first.body, second.body, "duplicates carry the same body")
 	assert.False(t, first.duplicate)
-	assert.True(t, second.duplicate, "повтор распознан дедупликацией получателя")
+	assert.True(t, second.duplicate, "the replay is recognized by receiver deduplication")
 	assert.Equal(t, "confirmed", first.body.Status)
 	assert.Equal(t, e2ePaymentID, first.body.PaymentID)
 	assert.Equal(t, gatewayID, first.body.GatewayID)
@@ -187,9 +187,9 @@ func TestE2EMockGatewayWebhookContract(t *testing.T) {
 	assert.Equal(t, "0xabc", first.body.TXID)
 	assert.Equal(t, "trc20", first.body.Network)
 	_, err = time.Parse(time.RFC3339Nano, first.body.EventTS)
-	assert.NoError(t, err, "event_ts в RFC 3339")
+	assert.NoError(t, err, "event_ts is in RFC 3339")
 
-	// Шаг 3: испорченная подпись отвергается получателем.
+	// Step 3: a corrupted signature is rejected by the receiver.
 	status, payload = postJSON(t, http.MethodPost, gatewaySrv.URL+"/api/v1/simulate",
 		`{"gateway_id":"`+gatewayID+`","status":"failed","signature":"invalid"}`, nil)
 	require.Equal(t, http.StatusOK, status)
@@ -197,21 +197,21 @@ func TestE2EMockGatewayWebhookContract(t *testing.T) {
 	assert.Contains(t, string(payload), `"mode":"invalid"`)
 	records = recvr.recordsCopy()
 	require.Len(t, records, 3)
-	assert.False(t, records[2].verified, "порченная подпись отвергнута")
-	assert.Equal(t, uint32(0), records[2].body.Confirmations, "подтверждения по умолчанию нулевые")
-	assert.Empty(t, records[2].body.TXID, "txid по умолчанию пуст")
+	assert.False(t, records[2].verified, "the corrupted signature is rejected")
+	assert.Equal(t, uint32(0), records[2].body.Confirmations, "confirmations default to zero")
+	assert.Empty(t, records[2].body.TXID, "txid is empty by default")
 
-	// Шаг 4: отсутствующая подпись отвергается получателем.
+	// Step 4: a missing signature is rejected by the receiver.
 	status, payload = postJSON(t, http.MethodPost, gatewaySrv.URL+"/api/v1/simulate",
 		`{"gateway_id":"`+gatewayID+`","status":"failed","signature":"missing"}`, nil)
 	require.Equal(t, http.StatusOK, status)
 	assert.Contains(t, string(payload), `"mode":"missing"`)
 	records = recvr.recordsCopy()
 	require.Len(t, records, 4)
-	assert.False(t, records[3].verified, "без подписи вебхук отвергнут")
+	assert.False(t, records[3].verified, "the webhook without a signature is rejected")
 
-	// Шаг 5: задержка и порядок: confirmed уходит сразу, detected - с задержкой
-	// и более ранним event_ts; получатель видит события не по порядку.
+	// Step 5: delay and ordering: confirmed is delivered immediately, detected -
+	// with a delay and an earlier event_ts; the receiver sees events out of order.
 	status, payload = postJSON(t, http.MethodPost, gatewaySrv.URL+"/api/v1/invoices", createBody, nil)
 	require.Equal(t, http.StatusCreated, status)
 	orderGateway := gatewayIDFrom(t, payload)
@@ -229,14 +229,14 @@ func TestE2EMockGatewayWebhookContract(t *testing.T) {
 	require.Len(t, records, 6)
 	confirmed, detected := records[4], records[5]
 	assert.Equal(t, "confirmed", confirmed.body.Status)
-	assert.Equal(t, "detected", detected.body.Status, "событие доставлено после более нового (retry/гонка)")
+	assert.Equal(t, "detected", detected.body.Status, "the event is delivered after a newer one (retry/race)")
 	confirmedTS, err := time.Parse(time.RFC3339Nano, confirmed.body.EventTS)
 	require.NoError(t, err)
 	detectedTS, err := time.Parse(time.RFC3339Nano, detected.body.EventTS)
 	require.NoError(t, err)
-	assert.True(t, detectedTS.Before(confirmedTS), "event_ts отражает порядок событий провайдера")
+	assert.True(t, detectedTS.Before(confirmedTS), "event_ts reflects the order of provider events")
 
-	// Шаг 6: сценарий сбоя API провайдера.
+	// Step 6: provider API failure scenario.
 	status, _ = postJSON(t, http.MethodPost, gatewaySrv.URL+"/api/v1/scenarios", `{"fail_next":1}`, nil)
 	require.Equal(t, http.StatusOK, status)
 
@@ -247,7 +247,7 @@ func TestE2EMockGatewayWebhookContract(t *testing.T) {
 	status, _ = postJSON(t, http.MethodGet, gatewaySrv.URL+"/api/v1/invoices/"+gatewayID, "", nil)
 	require.Equal(t, http.StatusOK, status)
 
-	// Журнал отправок содержит все доставки, включая отвергнутые.
+	// The delivery log contains all deliveries, including rejected ones.
 	status, payload = postJSON(t, http.MethodGet, gatewaySrv.URL+"/api/v1/webhooks", "", nil)
 	require.Equal(t, http.StatusOK, status)
 	var logResponse struct {
