@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"time"
 
@@ -48,6 +47,7 @@ type coinGateCreateRequest struct {
 type bitPayCreateRequest struct {
 	Price           json.Number `json:"price"`
 	Currency        string      `json:"currency"`
+	Token           string      `json:"token"`
 	OrderID         string      `json:"orderId"`
 	NotificationURL string      `json:"notificationURL"`
 	RedirectURL     string      `json:"redirectURL"`
@@ -103,17 +103,18 @@ func (p Profile) ParseCreateInvoice(body []byte, now time.Time) (CreateInvoiceRe
 		if err := decodeStrictProfileJSON(body, &decoded); err != nil {
 			return CreateInvoiceRequest{}, err
 		}
-		minorUnits, err := strconv.ParseInt(strings.TrimSpace(decoded.Price.String()), 10, 64)
-		if err != nil {
-			return CreateInvoiceRequest{}, fmt.Errorf("%w: bitpay price must be integer minor units", ErrInvalidRequest)
-		}
-		amount, err := money.New(minorUnits, strings.ToUpper(strings.TrimSpace(decoded.Currency)), AssetDecimals(decoded.Currency))
+		// The price of the real API is a decimal number in major units of the
+		// pricing currency; posData carries the requested network.
+		amount, err := ParseAssetAmount(decoded.Currency, decoded.Price)
 		if err != nil {
 			return CreateInvoiceRequest{}, fmt.Errorf("%w: %w", ErrInvalidRequest, err)
 		}
 		request.PaymentID = decoded.OrderID
 		request.Amount = amount
-		request.Network = strings.ToLower(decoded.Currency)
+		request.Network = strings.ToLower(strings.TrimSpace(decoded.PosData))
+		if request.Network == "" {
+			request.Network = strings.ToLower(strings.TrimSpace(decoded.Currency))
+		}
 	case ProfileBTCPay:
 		var decoded btcPayCreateRequest
 		if err := decodeStrictProfileJSON(body, &decoded); err != nil {
@@ -206,19 +207,26 @@ type coinGateOrderResponse struct {
 	CreatedAt      string      `json:"created_at"`
 }
 
-// bitPayInvoiceResponse describes the BitPay invoice body.
+// bitPayInvoiceResponse describes the BitPay invoice body; the real API
+// carries decimal major-unit amounts and wraps the body in a facade envelope.
 type bitPayInvoiceResponse struct {
-	ID             string `json:"id"`
-	URL            string `json:"url"`
-	Status         string `json:"status"`
-	Price          int64  `json:"price"`
-	Currency       string `json:"currency"`
-	OrderID        string `json:"orderId"`
-	AmountPaid     int64  `json:"amountPaid"`
-	Confirmations  uint32 `json:"confirmations"`
-	InvoiceTime    int64  `json:"invoiceTime"`
-	ExpirationTime int64  `json:"expirationTime"`
-	BitcoinAddress string `json:"bitcoinAddress"`
+	ID             string          `json:"id"`
+	URL            string          `json:"url"`
+	Status         string          `json:"status"`
+	Price          json.RawMessage `json:"price"`
+	Currency       string          `json:"currency"`
+	OrderID        string          `json:"orderId"`
+	AmountPaid     json.RawMessage `json:"amountPaid"`
+	Confirmations  uint32          `json:"confirmations"`
+	InvoiceTime    int64           `json:"invoiceTime"`
+	ExpirationTime int64           `json:"expirationTime"`
+	BitcoinAddress string          `json:"bitcoinAddress"`
+}
+
+// bitPayEnvelope wraps an invoice body in the facade envelope of the real API.
+type bitPayEnvelope struct {
+	Facade string                `json:"facade"`
+	Data   bitPayInvoiceResponse `json:"data"`
 }
 
 // btcPayInvoiceResponse describes the BTCPay invoice body.
@@ -282,19 +290,19 @@ func (p Profile) CreateInvoiceResponse(invoice Invoice) (any, error) {
 			CreatedAt:      invoice.CreatedAt.UTC().Format(time.RFC3339),
 		}, nil
 	case ProfileBitPay:
-		return bitPayInvoiceResponse{
+		return bitPayEnvelope{Facade: "merchant/invoice", Data: bitPayInvoiceResponse{
 			ID:             invoice.GatewayID,
 			URL:            p.checkoutURL(invoice.GatewayID),
 			Status:         rawStatusOf(invoice),
-			Price:          invoice.Amount.MinorUnits,
+			Price:          amountLiteral(invoice.Amount),
 			Currency:       invoice.Amount.Asset,
 			OrderID:        invoice.PaymentID,
-			AmountPaid:     invoice.ReceivedAmount.MinorUnits,
+			AmountPaid:     amountLiteral(invoice.ReceivedAmount),
 			Confirmations:  invoice.Confirmations,
 			InvoiceTime:    invoice.CreatedAt.UnixMilli(),
 			ExpirationTime: invoice.ExpiresAt.UnixMilli(),
 			BitcoinAddress: invoice.Address,
-		}, nil
+		}}, nil
 	case ProfileBTCPay:
 		return btcPayInvoiceResponse{
 			ID:             invoice.GatewayID,
@@ -347,19 +355,19 @@ func (p Profile) PaymentResponse(invoice Invoice) (any, error) {
 		if received.MinorUnits == 0 {
 			received = invoice.Amount
 		}
-		return bitPayInvoiceResponse{
+		return bitPayEnvelope{Facade: "merchant/invoice", Data: bitPayInvoiceResponse{
 			ID:             invoice.GatewayID,
 			URL:            p.checkoutURL(invoice.GatewayID),
 			Status:         rawStatusOf(invoice),
-			Price:          invoice.Amount.MinorUnits,
+			Price:          amountLiteral(invoice.Amount),
 			Currency:       invoice.Amount.Asset,
 			OrderID:        invoice.PaymentID,
-			AmountPaid:     received.MinorUnits,
+			AmountPaid:     amountLiteral(received),
 			Confirmations:  invoice.Confirmations,
 			InvoiceTime:    invoice.CreatedAt.UnixMilli(),
 			ExpirationTime: invoice.ExpiresAt.UnixMilli(),
 			BitcoinAddress: invoice.Address,
-		}, nil
+		}}, nil
 	case ProfileBTCPay:
 		return btcPayInvoiceResponse{
 			ID:             invoice.GatewayID,

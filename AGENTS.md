@@ -24,7 +24,9 @@ Out of scope: other platform services; interaction only through `cbl-protos` con
 - REST provider profiles (CBL-17.5): NOWPayments `POST /v1/invoice`,
   `GET /v1/payment/{id}` (`x-api-key`); CoinGate `POST /v2/orders`,
   `GET /v2/orders/{id}` (`Authorization: Bearer`); BitPay `POST /invoices`,
-  `GET /invoices/{id}` (`X-Identity`/`X-Signature` presence); BTCPay
+  `GET /invoices/{id}` (`X-Identity`/`X-Signature` presence; decimal major-unit
+  `price`/`amountPaid`, `token` in the create body, the `merchant/invoice` facade
+  envelope); BTCPay
   `POST /api/v1/stores/{store_id}/invoices`, `GET /api/v1/stores/{store_id}/invoices/{id}`
   (`Authorization: token`); the wire shapes, statuses and signatures are the profile
   contract (spec section 3.2)
@@ -107,7 +109,7 @@ consumer lag; dashboards after task 0.7.
 | T-MOCK-03 | The webhook format repeats contract CBL-3.5 (sandbox provider) | single source of the format for Connector and tests | the mock does not check the format on a live gateway | divergence only through updating both specs; real codes - 3.2 |
 | T-MOCK-04 | Recipient redirects are not followed; simulate delivery is detached from the client context (90 s) | the body and signature do not go to a redirect; a client disconnect does not lose the webhook | the `delay` scenario occupies the handler until completion | scenario limits (5 s/10 duplicates) and `WriteTimeout` 75 s are derived together |
 | T-MOCK-05 | Provider limits are emulated by error injection (`fail_status` 429/500/502/503 plus `retry_after_s`), not by implicit counters | deterministic tests; the provider official limits are documented per profile for adapter limiter config | a burst of accepted calls never trips a real leaky bucket on the stand | real limiter behavior is tested on the connector side (kit ratelimit, 17.3); 429 handling paths are exercised deterministically |
-| T-MOCK-06 | BitPay profile checks only the presence and base64 shape of `X-Identity`/`X-Signature`, not the ECDSA signature | no secp256k1 dependency in the stand | a wrong request signature is not detected by the mock | real signing is validated against the BitPay test stand (17.8); the IPN `x-signature` side is fully verified |
+| T-MOCK-06 | BitPay profile checks only the presence of `X-Identity`/`X-Signature`, not the ECDSA signature (the real scheme is a hex DER signature over url plus body with a compressed-key identity) | no secp256k1 dependency in the stand | a wrong request signature is not detected by the mock | real signing is validated offline by the connector unit suite (17.8) and against the BitPay test stand (17.16); the IPN `x-signature` side is fully verified |
 | T-MOCK-07 | The replay map is scoped by provider plus order id | the same order id cannot collide across profiles; adapters can test replay per provider | the stand dedupes by order id even where the real provider does not | documented stand aid; the connector idempotency contract is tested by the conformance suite CONF-9 |
 
 ## 9. Known issues
@@ -124,6 +126,7 @@ consumer lag; dashboards after task 0.7.
 | CBL-3.6 | 2026-10-14 | done, review closed (provider API, signed webhooks, failure scenarios, contract e2e, coverage 89.4%) | `.specs/CBL-3.6-mock-gateway.md` | `5cb4e7d` |
 | CBL-16.10 | 2026-10-16 | done (English comments and documentation across the repository: code, tests, configs, the spec, AGENTS.md, README; e2e runs via `test/e2e/E2E.md` with scenario E2E_MockGateway_Smoke, `smoke.ps1` and `make smoke` removed; validation run PASS; coverage unchanged) | `.specs/CBL-16.10-conventions.md` | this commit |
 | CBL-17.5 | 2026-10-17 | done, review closed (provider emulation profiles: five profiles with wire shapes, status tables, auth rules and signatures (canonical JSON HMAC-SHA512 of NOWPayments, token echo of CoinGate, raw HMAC base64 of BitPay, raw HMAC hex with the `sha256=` prefix of BTCPay); generic profile routes in the transport (route table `routesOf`); `webhook.ProfileSender`/`Switch` with `DeriveTarget`; simulate gained `provider`/`raw_status`, the scenario gained `fail_status`/`retry_after_s`; the delivery log carries the provider; in-process e2e scenario E2E_MockGateway_ProviderProfiles and the compose scenario E2E_MockGateway_Profiles; 4 review passes on the staged diff, findings closed: cross-profile reads answer 404 and a mismatched simulate answers 400 `provider_mismatch`, the invalid token echo derives from the secret, ProfileWebhook fails closed on a signing error, legacy problem details translated to English, signature-mode and status-matrix test gaps filled; unit coverage total 88.0%, e2e green, lint 0) | `.specs/CBL-17.5-provider-profiles.md` | this commit |
+| CBL-17.8 | 2026-10-17 | done (BitPay profile wire correction found by the 17.8 security review: the official API and SDK key utilities specify decimal major-unit `price`/`amountPaid`, the `merchant/invoice` facade envelope, the required `token` body field, `posData` as the network carrier, a hex DER request signature and a compressed-key `X-Identity`; the profile parse, response shaping, auth presence check and all domain/transport tests were realigned; the connector adapter and fixtures follow in its 17.8 commit) | `.specs/CBL-17.5-provider-profiles.md` (correction section 3.2) | this commit |
 
 ## 11. Runbook
 

@@ -64,13 +64,19 @@ func newProfileRouter(t *testing.T, missingTargets bool) (*gin.Engine, *capturin
 	return router, sender
 }
 
-// decodeProfileResponse decodes a response body with UseNumber.
+// decodeProfileResponse decodes a response body with UseNumber and unwraps the
+// BitPay facade envelope (the real API wraps invoice bodies in facade/data).
 func decodeProfileResponse(t *testing.T, recorder *httptest.ResponseRecorder) map[string]any {
 	t.Helper()
 	decoder := json.NewDecoder(strings.NewReader(recorder.Body.String()))
 	decoder.UseNumber()
 	var decoded map[string]any
 	require.NoError(t, decoder.Decode(&decoded))
+	if decoded["facade"] == "merchant/invoice" {
+		if data, ok := decoded["data"].(map[string]any); ok {
+			return data
+		}
+	}
 	return decoded
 }
 
@@ -82,7 +88,7 @@ func orderBody(profile string, orderID string) string {
 	case "coingate":
 		return `{"order_id":"` + orderID + `","price_amount":"12.34","price_currency":"USDT","pay_currency":"USDT_TRC20"}`
 	case "bitpay":
-		return `{"price":12340000,"currency":"USDT","orderId":"` + orderID + `"}`
+		return `{"token":"tok","price":"12.34","currency":"USDT","orderId":"` + orderID + `"}`
 	default:
 		return `{"amount":"12.34","currency":"USDT","metadata":{"orderId":"` + orderID + `","orderNetwork":"trc20"}}`
 	}
@@ -157,9 +163,9 @@ func TestProfileAuthMatrix(t *testing.T) {
 		map[string]string{"Authorization": "Basic abc"})
 	assert.Equal(t, http.StatusUnauthorized, wrongPrefix.Code)
 
-	badBitPaySig := doJSON(router, http.MethodPost, "/invoices", orderBody("bitpay", profileOrderID),
-		map[string]string{"X-Identity": "id-1", "X-Signature": "!!!not-base64!!!"})
-	assert.Equal(t, http.StatusUnauthorized, badBitPaySig.Code)
+	missingBitPaySig := doJSON(router, http.MethodPost, "/invoices", orderBody("bitpay", profileOrderID),
+		map[string]string{"X-Identity": "02abcd"})
+	assert.Equal(t, http.StatusUnauthorized, missingBitPaySig.Code)
 }
 
 func TestProfileNOWPaymentsRoundTrip(t *testing.T) {
@@ -215,7 +221,7 @@ func TestProfileBitPayRoundTrip(t *testing.T) {
 	require.True(t, ok)
 	assert.Len(t, gatewayID, 22)
 	assert.Equal(t, "new", decoded["status"])
-	assert.Equal(t, json.Number("12340000"), decoded["price"])
+	assert.Equal(t, json.Number("12.340000"), decoded["price"])
 	assert.NotEmpty(t, decoded["url"])
 	_, isNumber := decoded["invoiceTime"].(json.Number)
 	assert.True(t, isNumber)

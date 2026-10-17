@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"encoding/base64"
 	"fmt"
 	"net/http"
 	"slices"
@@ -194,17 +193,15 @@ func (p Profile) HasRawStatus(raw string) bool {
 	return slices.Contains(p.RawStatuses, raw)
 }
 
-// ValidateAuth checks the profile auth requirements: header presence, the value
-// prefix and, for BitPay, the base64 shape of the request signature.
+// ValidateAuth checks the profile auth requirements: header presence and the
+// value prefix; for BitPay only the presence of the signature headers is
+// checked (the ECDSA scheme is not reproduced by the stand, T-MOCK-06).
 func (p Profile) ValidateAuth(header http.Header) error {
 	if p.ID == ProfileBitPay {
 		identity := strings.TrimSpace(header.Get("X-Identity"))
 		signature := strings.TrimSpace(header.Get("X-Signature"))
 		if identity == "" || signature == "" {
 			return fmt.Errorf("%w: missing X-Identity or X-Signature", ErrUnauthorized)
-		}
-		if _, err := base64.StdEncoding.DecodeString(signature); err != nil {
-			return fmt.Errorf("%w: X-Signature is not base64", ErrUnauthorized)
 		}
 		return nil
 	}

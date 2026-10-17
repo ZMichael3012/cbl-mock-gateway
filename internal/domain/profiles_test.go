@@ -199,10 +199,16 @@ func TestProfileParseCreateInvoiceCoinGate(t *testing.T) {
 func TestProfileParseCreateInvoiceBitPay(t *testing.T) {
 	profile := mustProfile(t, "bitpay")
 	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
-	body := `{"price":1234567,"currency":"USDT","orderId":"` + profilePaymentID + `","notificationURL":"https://example.test/hooks/bitpay/ep1"}`
+	body := `{"token":"tok","price":"12.34","currency":"USDT","orderId":"` + profilePaymentID + `","posData":"usdt_trc20","notificationURL":"https://example.test/hooks/bitpay/ep1"}`
 	request, err := profile.ParseCreateInvoice([]byte(body), now)
 	require.NoError(t, err)
-	assert.Equal(t, money.Money{MinorUnits: 1_234_567, Asset: "USDT", Decimals: 6}, request.Amount)
+	assert.Equal(t, money.Money{MinorUnits: 12_340_000, Asset: "USDT", Decimals: 6}, request.Amount)
+	assert.Equal(t, "usdt_trc20", request.Network)
+
+	body = `{"token":"tok","price":12.34,"currency":"USDT","orderId":"` + profilePaymentID + `"}`
+	request, err = profile.ParseCreateInvoice([]byte(body), now)
+	require.NoError(t, err)
+	assert.Equal(t, int64(12_340_000), request.Amount.MinorUnits)
 	assert.Equal(t, "usdt", request.Network)
 }
 
@@ -279,9 +285,12 @@ func TestProfileResponseShaping(t *testing.T) {
 	payload, err = bitpay.CreateInvoiceResponse(bitpayInvoice)
 	require.NoError(t, err)
 	decoded = decodeObject(t, payload)
-	assert.Equal(t, "abcdefghijklmnopqrstuv", decoded["id"])
-	assert.Equal(t, json.Number("12340000"), decoded["price"])
-	assert.Equal(t, json.Number(strconv.FormatInt(bitpayInvoice.CreatedAt.UnixMilli(), 10)), decoded["invoiceTime"])
+	assert.Equal(t, "merchant/invoice", decoded["facade"])
+	data, ok := decoded["data"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "abcdefghijklmnopqrstuv", data["id"])
+	assert.Equal(t, json.Number("12.340000"), data["price"])
+	assert.Equal(t, json.Number(strconv.FormatInt(bitpayInvoice.CreatedAt.UnixMilli(), 10)), data["invoiceTime"])
 
 	btcpay := mustProfile(t, "btcpay")
 	btcpayInvoice := invoice
@@ -321,8 +330,8 @@ func TestValidateAuth(t *testing.T) {
 
 	bitpay := mustProfile(t, "bitpay")
 	require.Error(t, bitpay.ValidateAuth(header(map[string]string{"X-Identity": "id"})))
-	require.Error(t, bitpay.ValidateAuth(header(map[string]string{"X-Identity": "id", "X-Signature": "###"})))
-	require.NoError(t, bitpay.ValidateAuth(header(map[string]string{"X-Identity": "id", "X-Signature": "c2ln"})))
+	require.Error(t, bitpay.ValidateAuth(header(map[string]string{"X-Signature": "sig"})))
+	require.NoError(t, bitpay.ValidateAuth(header(map[string]string{"X-Identity": "02abcd", "X-Signature": "3045"})))
 }
 
 func TestRawStatusUnsupported(t *testing.T) {
@@ -363,8 +372,10 @@ func TestPaymentResponsePerProfile(t *testing.T) {
 	payload, err = bitpay.PaymentResponse(invoice)
 	require.NoError(t, err)
 	decoded = decodeObject(t, payload)
-	assert.Equal(t, "complete", decoded["status"])
-	assert.Equal(t, json.Number("12340000"), decoded["price"])
+	data, ok := decoded["data"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "complete", data["status"])
+	assert.Equal(t, json.Number("12.340000"), data["price"])
 
 	btcpay := mustProfile(t, "btcpay")
 	invoice = base
@@ -382,7 +393,10 @@ func TestPaymentResponsePerProfile(t *testing.T) {
 	invoice.ReceivedAmount = money.Money{}
 	payload, err = bitpay.PaymentResponse(invoice)
 	require.NoError(t, err)
-	assert.Equal(t, json.Number("12340000"), decodeObject(t, payload)["amountPaid"])
+	decoded = decodeObject(t, payload)
+	data, ok = decoded["data"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, json.Number("12.340000"), data["amountPaid"])
 
 	// The mock profile has no profile API: the legacy routes serve it.
 	mock := mustProfile(t, "mock")

@@ -195,12 +195,21 @@ Request and response shapes:
   amounts are decimal strings with 6 fraction digits; `status` is the raw provider
   status; `network = LOWER(pay_currency)`. Get answers the same shape with the
   current status.
-- bitpay create: `{price, currency, orderId, notificationURL?, redirectURL?,
-  posData?}`; `price` is an integer in minor units; response `{id, url, status,
-  price, currency, orderId, invoiceTime, expirationTime, bitcoinAddress}`;
-  `invoiceTime`/`expirationTime` are Unix milliseconds; `network = LOWER(currency)`.
-  `X-Signature` must be non-empty base64 (format check only). Get answers the same
-  shape with the current status.
+- bitpay create: `{price, currency, token, orderId, notificationURL?, redirectURL?,
+  posData?}`; per the official API `price` is a decimal number in major units of
+  the pricing currency (the platform sends the crypto amount), `token` is the
+  pairing token, `posData` carries the requested network; response is the facade
+  envelope `{facade: "merchant/invoice", data: {id, url, status, price, currency,
+  orderId, amountPaid, confirmations, invoiceTime, expirationTime, bitcoinAddress}}`
+  with decimal major-unit `price`/`amountPaid` and Unix millisecond times;
+  `network = LOWER(posData or currency)`. `X-Identity`/`X-Signature` must be
+  non-empty (the ECDSA scheme and its hex encoding are not reproduced, T-MOCK-06).
+  Get answers the same envelope with the current status.
+  Correction 17.10.2026 (17.8): the initial 17.5 shape used integer minor-unit
+  amounts, a flat body and implied a base64 request signature; the official
+  BitPay documentation and SDK key utilities (hex DER signature, compressed
+  public key identity) disproved that approximation during the 17.8 security
+  review, and the profile was realigned to the documented contract.
 - btcpay create: `{amount, currency, metadata: {orderId, itemDesc?, orderNetwork?},
   checkout: {redirectURL?}}`; response `{id, storeId, amount, currency, status,
   checkoutLink, createdTime, expirationTime, metadata}`; `amount` is a decimal
@@ -298,8 +307,11 @@ canonical status, unknown raw status, missing webhook target for a profile.
 - D2. Limits are emulated by injection (`fail_status=429` plus `retry_after_s`),
   not by implicit counters: deterministic tests matter more than a faithful leaky
   bucket in a stand (T-MOCK-05).
-- D3. BitPay request ECDSA is not verified (T-MOCK-06): presence and base64 format
-  only; real signing is exercised by 17.8 against the BitPay test stand.
+- D3. BitPay request ECDSA is not verified (T-MOCK-06): presence of the identity and
+  signature headers only; the signature encoding follows the official SDK key
+  utilities (hex DER over url plus body, compressed public key identity, corrected
+  in the 17.8 review), and real signing is exercised by 17.8 unit proofs plus the
+  BitPay test stand in 17.16.
 - D4. Wire shapes are the stand contract now and are re-validated against live
   APIs by 17.16; approximations are marked (BitPay event codes, BTCPay types).
 - Rejected: separate mock service per provider (plan 14.3 explicitly forbids it);
@@ -370,7 +382,8 @@ another profile creates a separate invoice.
 E-6. Missing webhook target for a profile -> 400 `missing_webhook_target`.
 E-7. `fail_status` outside the allowed set or `retry_after_s` outside 0 - 600,
 or `retry_after_s > 0` without `fail_status` 429 -> 400 (scenario validation).
-E-8. Invalid base64 in BitPay `X-Signature` -> 401 (format check).
+E-8. A BitPay request without `X-Identity` or `X-Signature` -> 401 (presence check;
+the stand does not reproduce the ECDSA scheme).
 E-9. Amounts with more fraction digits than the decimals table -> 400
 (`invalid_amount`).
 E-10. BTCPay store id mismatch between create and get does not matter (the stand
