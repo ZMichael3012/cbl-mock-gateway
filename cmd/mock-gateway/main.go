@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 
 	"github.com/cbl/cbl-kit/ginmw"
 
+	"github.com/cbl/cbl-mock-gateway/internal/domain"
 	"github.com/cbl/cbl-mock-gateway/internal/transport"
 	"github.com/cbl/cbl-mock-gateway/internal/usecase"
 	"github.com/cbl/cbl-mock-gateway/internal/webhook"
@@ -31,18 +33,12 @@ func main() {
 	}
 	defer func() { _ = log.Sync() }()
 
-	sender, err := webhook.NewHTTPSender(
-		getenv("WEBHOOK_TARGET_URL", "http://localhost:8060/hooks/mock/ep1"),
-		getenv("WEBHOOK_SECRET", "mock-secret"),
-		getenv("WEBHOOK_SIGNATURE_HEADER", "X-Billing-Signature"),
-		getenv("WEBHOOK_EVENT_ID_HEADER", "X-Event-Id"),
-		durationEnv(log, "WEBHOOK_TIMEOUT", 5*time.Second),
-	)
+	switcher, err := buildSenderSwitch(log)
 	if err != nil {
-		log.Error("build webhook sender failed", zap.Error(err))
+		log.Error("build webhook senders failed", zap.Error(err))
 		return
 	}
-	service := usecase.NewService(sender, log)
+	service := usecase.NewService(switcher, log, usecase.WithTargets(switcher))
 	server := transport.NewServer(service, log)
 
 	httpAddr := getenv("HTTP_ADDR", ":8120")
@@ -101,6 +97,59 @@ func main() {
 		log.Error("metrics shutdown failed", zap.Error(shutdownErr))
 	}
 	log.Info("shutdown finished")
+}
+
+// buildSenderSwitch wires the legacy mock sender and the per-profile senders:
+// a profile without a derivable target and without an explicit env target has
+// no sender, so simulate answers 400 for it (spec FR-7).
+func buildSenderSwitch(log *zap.Logger) (*webhook.Switch, error) {
+	timeout := durationEnv(log, "WEBHOOK_TIMEOUT", 5*time.Second)
+	eventIDHeader := getenv("WEBHOOK_EVENT_ID_HEADER", "X-Event-Id")
+	baseTarget := getenv("WEBHOOK_TARGET_URL", "http://localhost:8060/hooks/mock/ep1")
+
+	legacy, err := webhook.NewHTTPSender(
+		baseTarget,
+		getenv("WEBHOOK_SECRET", "mock-secret"),
+		getenv("WEBHOOK_SIGNATURE_HEADER", "X-Billing-Signature"),
+		eventIDHeader,
+		timeout,
+	)
+	if err != nil {
+		return nil, err
+	}
+	senders := map[domain.ProfileID]usecase.WebhookSender{domain.ProfileMock: legacy}
+
+	secretDefaults := map[domain.ProfileID]string{
+		domain.ProfileNOWPayments: "mock-nowpayments-secret",
+		domain.ProfileCoinGate:    "mock-coingate-token",
+		domain.ProfileBitPay:      "mock-bitpay-secret",
+		domain.ProfileBTCPay:      "mock-btcpay-secret",
+	}
+	for _, profile := range domain.AllProfiles() {
+		if profile.ID == domain.ProfileMock {
+			continue
+		}
+		envSuffix := strings.ToUpper(string(profile.ID))
+		target := os.Getenv("WEBHOOK_TARGET_URL_" + envSuffix)
+		if target == "" {
+			derived, ok := webhook.DeriveTarget(baseTarget, profile.ID)
+			if !ok {
+				log.Warn("profile webhook target is not configured",
+					zap.String("provider", string(profile.ID)),
+					zap.String("env", "WEBHOOK_TARGET_URL_"+envSuffix),
+				)
+				continue
+			}
+			target = derived
+		}
+		secret := getenv("WEBHOOK_SECRET_"+envSuffix, secretDefaults[profile.ID])
+		sender, senderErr := webhook.NewProfileSender(profile, target, []byte(secret), eventIDHeader, timeout)
+		if senderErr != nil {
+			return nil, senderErr
+		}
+		senders[profile.ID] = sender
+	}
+	return webhook.NewSwitch(senders)
 }
 
 // metricsHandler serves a metrics stub until task 0.7.

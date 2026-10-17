@@ -3,6 +3,7 @@ package transport
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -44,6 +45,7 @@ func (s *Server) Register(router gin.IRouter) {
 	router.GET("/api/v1/scenarios", s.getScenario)
 	router.POST("/api/v1/scenarios", s.setScenario)
 	router.POST("/api/v1/scenarios/reset", s.resetScenario)
+	s.registerProfileRoutes(router)
 }
 
 // limitBody limits request body reads; an overflow yields 413 on read.
@@ -104,7 +106,9 @@ type invoiceResponse struct {
 // simulateRequest describes the webhook generation request body.
 type simulateRequest struct {
 	GatewayID      string    `json:"gateway_id"`
+	Provider       string    `json:"provider"`
 	Status         string    `json:"status"`
+	RawStatus      string    `json:"raw_status"`
 	ReceivedAmount *moneyDTO `json:"received_amount"`
 	Confirmations  uint32    `json:"confirmations"`
 	TXID           string    `json:"txid"`
@@ -117,6 +121,7 @@ type simulateRequest struct {
 // deliveryDTO describes the result of a single delivery.
 type deliveryDTO struct {
 	SentAt     string `json:"sent_at"`
+	Provider   string `json:"provider"`
 	HTTPStatus int    `json:"http_status"`
 	Mode       string `json:"mode"`
 	Error      string `json:"error,omitempty"`
@@ -132,6 +137,7 @@ type simulateResponse struct {
 type deliveryLogDTO struct {
 	EventID    string `json:"event_id"`
 	GatewayID  string `json:"gateway_id"`
+	Provider   string `json:"provider"`
 	Status     string `json:"status"`
 	Mode       string `json:"mode"`
 	SentAt     string `json:"sent_at"`
@@ -141,14 +147,18 @@ type deliveryLogDTO struct {
 
 // scenarioRequest describes the failure scenario request body.
 type scenarioRequest struct {
-	FailNext  int `json:"fail_next"`
-	LatencyMS int `json:"latency_ms"`
+	FailNext    int `json:"fail_next"`
+	LatencyMS   int `json:"latency_ms"`
+	FailStatus  int `json:"fail_status"`
+	RetryAfterS int `json:"retry_after_s"`
 }
 
 // scenarioResponse describes the current scenario.
 type scenarioResponse struct {
-	FailNext  int `json:"fail_next"`
-	LatencyMS int `json:"latency_ms"`
+	FailNext    int `json:"fail_next"`
+	LatencyMS   int `json:"latency_ms"`
+	FailStatus  int `json:"fail_status"`
+	RetryAfterS int `json:"retry_after_s"`
 }
 
 // createInvoice handles provider invoice creation.
@@ -160,7 +170,7 @@ func (s *Server) createInvoice(c *gin.Context) {
 	}
 	expiresAt, err := time.Parse(time.RFC3339, request.ExpiresAt)
 	if err != nil {
-		s.abort(c, http.StatusBadRequest, "invalid_expires_at", "Bad Request", "expires_at в формате RFC 3339")
+		s.abort(c, http.StatusBadRequest, "invalid_expires_at", "Bad Request", "expires_at must be RFC 3339")
 		return
 	}
 	invoice, replayed, err := s.svc.CreateInvoice(c.Request.Context(), domain.CreateInvoiceRequest{
@@ -192,6 +202,12 @@ func (s *Server) getInvoice(c *gin.Context) {
 		s.mapError(c, err)
 		return
 	}
+	if invoice.Provider != domain.ProfileMock {
+		// The legacy route serves only sandbox invoices: a profile invoice id
+		// must not render the mock body for it (spec E-11).
+		s.mapError(c, fmt.Errorf("%w: %s", domain.ErrInvoiceNotFound, invoice.GatewayID))
+		return
+	}
 	c.JSON(http.StatusOK, toInvoiceResponse(invoice, false))
 }
 
@@ -211,7 +227,7 @@ func (s *Server) simulate(c *gin.Context) {
 	if request.EventTS != "" {
 		parsed, parseErr := time.Parse(time.RFC3339Nano, request.EventTS)
 		if parseErr != nil {
-			s.abort(c, http.StatusBadRequest, "invalid_event_ts", "Bad Request", "event_ts в формате RFC 3339")
+			s.abort(c, http.StatusBadRequest, "invalid_event_ts", "Bad Request", "event_ts must be RFC 3339")
 			return
 		}
 		eventTS = &parsed
@@ -227,7 +243,9 @@ func (s *Server) simulate(c *gin.Context) {
 	}
 	result, err := s.svc.Simulate(c.Request.Context(), domain.SimulateRequest{
 		GatewayID:      request.GatewayID,
+		Provider:       domain.ProfileID(request.Provider),
 		Status:         request.Status,
+		RawStatus:      request.RawStatus,
 		ReceivedAmount: received,
 		Confirmations:  request.Confirmations,
 		TXID:           request.TXID,
@@ -244,6 +262,7 @@ func (s *Server) simulate(c *gin.Context) {
 	for _, delivery := range result.Deliveries {
 		deliveries = append(deliveries, deliveryDTO{
 			SentAt:     delivery.SentAt.UTC().Format(time.RFC3339Nano),
+			Provider:   string(delivery.Provider),
 			HTTPStatus: delivery.HTTPStatus,
 			Mode:       string(signature),
 			Error:      delivery.Error,
@@ -260,6 +279,7 @@ func (s *Server) listWebhooks(c *gin.Context) {
 		response = append(response, deliveryLogDTO{
 			EventID:    delivery.EventID,
 			GatewayID:  delivery.GatewayID,
+			Provider:   string(delivery.Provider),
 			Status:     string(delivery.Status),
 			Mode:       string(delivery.Mode),
 			SentAt:     delivery.SentAt.UTC().Format(time.RFC3339Nano),
@@ -273,7 +293,7 @@ func (s *Server) listWebhooks(c *gin.Context) {
 // getScenario returns the current failure scenario.
 func (s *Server) getScenario(c *gin.Context) {
 	scenario := s.svc.GetScenario()
-	c.JSON(http.StatusOK, scenarioResponse{FailNext: scenario.FailNext, LatencyMS: scenario.LatencyMS})
+	c.JSON(http.StatusOK, toScenarioResponse(scenario))
 }
 
 // setScenario sets the provider API failure scenario.
@@ -283,12 +303,27 @@ func (s *Server) setScenario(c *gin.Context) {
 		s.abortBind(c, err)
 		return
 	}
-	scenario := domain.Scenario{FailNext: request.FailNext, LatencyMS: request.LatencyMS}
+	scenario := domain.Scenario{
+		FailNext:    request.FailNext,
+		LatencyMS:   request.LatencyMS,
+		FailStatus:  request.FailStatus,
+		RetryAfterS: request.RetryAfterS,
+	}
 	if err := s.svc.SetScenario(scenario); err != nil {
 		s.mapError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, scenarioResponse{FailNext: scenario.FailNext, LatencyMS: scenario.LatencyMS})
+	c.JSON(http.StatusOK, toScenarioResponse(scenario))
+}
+
+// toScenarioResponse converts a scenario into the API response.
+func toScenarioResponse(scenario domain.Scenario) scenarioResponse {
+	return scenarioResponse{
+		FailNext:    scenario.FailNext,
+		LatencyMS:   scenario.LatencyMS,
+		FailStatus:  scenario.FailStatus,
+		RetryAfterS: scenario.RetryAfterS,
+	}
 }
 
 // resetScenario resets the failure scenario.
@@ -299,15 +334,19 @@ func (s *Server) resetScenario(c *gin.Context) {
 
 // mapError converts domain errors into problem+json.
 func (s *Server) mapError(c *gin.Context, err error) {
+	if failure, ok := isInjectedFailure(err); ok {
+		s.mapInjectedFailure(c, failure)
+		return
+	}
 	switch {
+	case errors.Is(err, domain.ErrUnauthorized):
+		s.abort(c, http.StatusUnauthorized, "unauthorized", "Unauthorized", "")
 	case errors.Is(err, domain.ErrInvalidRequest):
 		s.abort(c, http.StatusBadRequest, "invalid_request", "Bad Request", err.Error())
 	case errors.Is(err, domain.ErrInvoiceNotFound):
-		s.abort(c, http.StatusNotFound, "invoice_not_found", "Not Found", "счет не найден")
-	case errors.Is(err, domain.ErrInjectedFailure):
-		s.abort(c, http.StatusServiceUnavailable, "provider_unavailable", "Service Unavailable", "сценарий сбоя провайдера")
+		s.abort(c, http.StatusNotFound, "invoice_not_found", "Not Found", "invoice not found")
 	case errors.Is(err, domain.ErrStoreFull):
-		s.abort(c, http.StatusServiceUnavailable, "store_full", "Service Unavailable", "хранилище счетов заполнено")
+		s.abort(c, http.StatusServiceUnavailable, "store_full", "Service Unavailable", "invoice store is full")
 	default:
 		s.log.Error("mock-gateway request failed", zap.Error(err))
 		s.abort(c, http.StatusInternalServerError, "internal_error", "Internal Server Error", "")
@@ -322,7 +361,7 @@ func (s *Server) abortBind(c *gin.Context, err error) {
 		s.abort(c, http.StatusRequestEntityTooLarge, "body_too_large", "Payload Too Large", "")
 		return
 	}
-	s.abort(c, http.StatusBadRequest, "invalid_json", "Bad Request", "тело запроса не разобрано")
+	s.abort(c, http.StatusBadRequest, "invalid_json", "Bad Request", "request body is not valid json")
 }
 
 // abort answers with problem+json using the given status.

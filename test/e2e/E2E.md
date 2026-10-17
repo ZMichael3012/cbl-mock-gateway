@@ -14,6 +14,7 @@ separately on the `e2e` tag (`make test-e2e`, no Docker).
 | Scenario | Checks | Contracts |
 | :-- | :-- | :-- |
 | `E2E_MockGateway_Smoke` | compose stand up, healthz, invoice creation returns a gateway_id, the same Idempotency-Key replays to the same gateway_id, the invoice reads back as pending, simulate with duplicate=2 returns an event_id and two deliveries (each either accepted or a recorded network error with http_status 0), the webhook log has at least two entries | provider REST contract, webhook contract equal to the CBL-3.5 sandbox provider (T-MOCK-03) |
+| `E2E_MockGateway_Profiles` | provider profiles on the stand: CoinGate order creation with `Authorization: Bearer` returns a numeric id (401 without the header and with the wrong prefix), the order reads back with the raw status `new`, simulate `provider=coingate` returns a delivery carrying the provider (network error allowed as in the smoke), the scenarios endpoint echoes `fail_status`/`retry_after_s`, an injected `fail_status=429` answers 429 with `Retry-After` | profile wire contract of CBL-17.5 section 3.2 (CoinGate subset) |
 
 ## 2. Isolation and parallelism
 
@@ -64,7 +65,32 @@ restarted stand forgets it (in-memory state, T-MOCK-01).
 6. Webhook log: `GET /api/v1/webhooks` returns at least 2 entries.
 7. Checks go to `smoke-checks.txt`.
 
-## 5. Mandatory run artifacts
+## 5. E2E_MockGateway_Profiles
+
+1. Common run order, steps 1-4.
+2. Unauthorized check: `POST /v2/orders` without the `Authorization` header must
+   answer 401 with problem+json; with `Authorization: Basic x` must answer 401;
+   with `Authorization: Bearer cg-token` must answer 201.
+3. Create a CoinGate order: body
+   `{ "order_id": "<fresh UUID>", "price_amount": "12.34", "price_currency": "USDT", "pay_currency": "USDT_TRC20" }`
+   with `Authorization: Bearer cg-token`; the response `id` must be a JSON
+   number and `status` must be `new`.
+4. Replay: repeat the identical request; the response must answer 200 with the
+   same `id` (the stand replay map is scoped per provider).
+5. Read back: `GET /v2/orders/{id}` with the same header returns `status` = `new`.
+6. Simulate: `POST /api/v1/simulate` with
+   `{ "gateway_id": "<id>", "provider": "coingate", "status": "confirmed" }`;
+   the response `deliveries[0].provider` must be `coingate` and `http_status` is
+   0 or 2xx; the raw status in the sent body is `paid` (token echo; the delivery
+   log entry carries the provider).
+7. Failure injection: `POST /api/v1/scenarios` with
+   `{ "fail_next": 1, "fail_status": 429, "retry_after_s": 30 }`; the response
+   echoes both fields; the next `POST /v2/orders` answers 429 with
+   `Retry-After: 30`; the following create succeeds again (200 replay of the
+   existing order or 201). Reset with `POST /api/v1/scenarios/reset`.
+8. Checks go to `smoke-checks.txt`.
+
+## 6. Mandatory run artifacts
 
 - `summary.md` (template `.additionals/summary.template.md`; PASS/FAIL verdict, steps,
   key values, artifact list, time);
@@ -73,12 +99,12 @@ restarted stand forgets it (in-memory state, T-MOCK-01).
 - on failure: container states, the mock-gateway log fragments, the failing request and
   its raw response.
 
-## 6. Auxiliary files (.additionals)
+## 7. Auxiliary files (.additionals)
 
 - `summary.template.md` - the `summary.md` template;
 - `inventory.md` - the list of auxiliary files and their purpose.
 
-## 7. Cleanup
+## 8. Cleanup
 
 `docker compose -p cbl-mock-gateway-e2e-<MARK> -f deploy/docker-compose.yml --profile app down -v`
 at the end; `.runs/` is not committed; a repeated run must start from a clean stand.

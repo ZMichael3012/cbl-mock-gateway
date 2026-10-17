@@ -21,7 +21,28 @@ var (
 	ErrInjectedFailure = errors.New("mock-gateway: injected provider failure")
 	// ErrStoreFull reports an in-memory invoice store overflow.
 	ErrStoreFull = errors.New("mock-gateway: invoice store is full")
+	// ErrUnauthorized reports a missing or malformed profile auth header.
+	ErrUnauthorized = errors.New("mock-gateway: unauthorized")
 )
+
+// InjectedFailureError carries the scenario response of an injected provider
+// failure: the HTTP status (503 by default) and the optional Retry-After.
+type InjectedFailureError struct {
+	// Status sets the response status of the injected failure.
+	Status int
+	// RetryAfterS sets the Retry-After value in seconds (429 only; 0 omits the header).
+	RetryAfterS int
+}
+
+// Error implements the error interface.
+func (e InjectedFailureError) Error() string {
+	return fmt.Sprintf("%s: status %d", ErrInjectedFailure.Error(), e.Status)
+}
+
+// Unwrap returns the sentinel error for errors.Is.
+func (e InjectedFailureError) Unwrap() error {
+	return ErrInjectedFailure
+}
 
 // Status describes the status of a mock provider invoice and event.
 type Status string
@@ -112,6 +133,8 @@ const (
 
 // CreateInvoiceRequest describes an invoice creation request.
 type CreateInvoiceRequest struct {
+	// Provider sets the provider profile (empty means the mock profile).
+	Provider ProfileID
 	// IdempotencyKey sets the idempotency key of the call.
 	IdempotencyKey string
 	// PaymentID sets the platform payment.
@@ -151,6 +174,8 @@ func (r CreateInvoiceRequest) Validate() error {
 type Invoice struct {
 	// GatewayID sets the provider invoice identifier.
 	GatewayID string
+	// Provider sets the provider profile of the invoice.
+	Provider ProfileID
 	// PaymentID sets the platform payment.
 	PaymentID string
 	// Address sets the mock payment address.
@@ -161,6 +186,8 @@ type Invoice struct {
 	Amount money.Money
 	// Status sets the current invoice status.
 	Status Status
+	// RawStatus sets the provider raw status carried on the wire.
+	RawStatus string
 	// ReceivedAmount sets the received amount.
 	ReceivedAmount money.Money
 	// Confirmations sets the confirmation depth.
@@ -179,8 +206,12 @@ type Invoice struct {
 type SimulateRequest struct {
 	// GatewayID sets the invoice the event is sent for.
 	GatewayID string
+	// Provider sets the provider profile (empty means the mock profile).
+	Provider ProfileID
 	// Status sets the event status (canonical or alias).
 	Status string
+	// RawStatus overrides the provider raw status; empty means the profile mapping.
+	RawStatus string
 	// ReceivedAmount sets the received amount; nil means the invoice amount.
 	ReceivedAmount *money.Money
 	// Confirmations sets the confirmation depth.
@@ -204,6 +235,16 @@ func (r SimulateRequest) Validate() error {
 	}
 	if _, err := CanonicalStatus(r.Status); err != nil {
 		return err
+	}
+	profile, ok := ProfileByID(string(r.Provider))
+	if r.Provider == "" {
+		profile, ok = ProfileByID(string(ProfileMock))
+	}
+	if !ok {
+		return fmt.Errorf("%w: unknown provider %q", ErrInvalidRequest, r.Provider)
+	}
+	if r.RawStatus != "" && !profile.HasRawStatus(r.RawStatus) {
+		return fmt.Errorf("%w: unknown_raw_status %q for provider %q", ErrInvalidRequest, r.RawStatus, profile.ID)
 	}
 	if r.ReceivedAmount != nil {
 		if _, err := money.New(r.ReceivedAmount.MinorUnits, r.ReceivedAmount.Asset, r.ReceivedAmount.Decimals); err != nil {
@@ -233,10 +274,15 @@ func (r SimulateRequest) Validate() error {
 
 // Scenario describes a provider API failure scenario.
 type Scenario struct {
-	// FailNext sets the number of following calls that answer with a 503 error.
+	// FailNext sets the number of following calls that answer with an error.
 	FailNext int
 	// LatencyMS sets the added response latency.
 	LatencyMS int
+	// FailStatus selects the injected status: 0 means 503;
+	// 429, 500, 502 and 503 are allowed.
+	FailStatus int
+	// RetryAfterS sets the Retry-After header value in seconds (429 only).
+	RetryAfterS int
 }
 
 // Validate checks the scenario parameters.
@@ -247,6 +293,17 @@ func (s Scenario) Validate() error {
 	if s.LatencyMS < 0 || s.LatencyMS > maxLatencyMS {
 		return fmt.Errorf("%w: latency_ms out of range", ErrInvalidRequest)
 	}
+	switch s.FailStatus {
+	case 0, 429, 500, 502, 503:
+	default:
+		return fmt.Errorf("%w: fail_status %d is not allowed", ErrInvalidRequest, s.FailStatus)
+	}
+	if s.RetryAfterS < 0 || s.RetryAfterS > 600 {
+		return fmt.Errorf("%w: retry_after_s out of range", ErrInvalidRequest)
+	}
+	if s.RetryAfterS > 0 && s.FailStatus != 429 {
+		return fmt.Errorf("%w: retry_after_s requires fail_status 429", ErrInvalidRequest)
+	}
 	return nil
 }
 
@@ -256,6 +313,8 @@ type WebhookDelivery struct {
 	EventID string
 	// GatewayID sets the provider invoice.
 	GatewayID string
+	// Provider sets the provider profile of the delivery.
+	Provider ProfileID
 	// Status sets the event status.
 	Status Status
 	// Mode sets the signature mode.

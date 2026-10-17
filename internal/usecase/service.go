@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,12 +31,18 @@ const simulateSendBudget = 90 * time.Second
 type WebhookEvent struct {
 	// EventID sets the event identifier; repeated deliveries use the same id.
 	EventID string
+	// Provider sets the provider profile of the event.
+	Provider domain.ProfileID
 	// PaymentID sets the platform payment.
 	PaymentID string
 	// GatewayID sets the provider invoice.
 	GatewayID string
 	// Status sets the canonical event status.
 	Status domain.Status
+	// RawStatus sets the provider raw status carried in the body.
+	RawStatus string
+	// Amount sets the invoice amount.
+	Amount money.Money
 	// ReceivedAmount sets the received amount.
 	ReceivedAmount money.Money
 	// Confirmations sets the confirmation depth.
@@ -54,6 +61,8 @@ type WebhookEvent struct {
 type Delivery struct {
 	// SentAt sets the send time.
 	SentAt time.Time
+	// Provider sets the provider profile of the delivery.
+	Provider domain.ProfileID
 	// HTTPStatus sets the receiver response code; 0 means a network failure.
 	HTTPStatus int
 	// Error sets the delivery error text.
@@ -64,6 +73,13 @@ type Delivery struct {
 type WebhookSender interface {
 	// Send signs and sends the event, returning the delivery result.
 	Send(ctx context.Context, event WebhookEvent) Delivery
+}
+
+// TargetResolver reports whether a provider profile has a configured webhook
+// target; simulate answers 400 when the target of the requested provider is missing.
+type TargetResolver interface {
+	// HasTarget reports whether the profile can receive webhook deliveries.
+	HasTarget(provider domain.ProfileID) bool
 }
 
 // SimulateResult describes the simulate result: the event identifier and the deliveries.
@@ -77,14 +93,16 @@ type SimulateResult struct {
 // Service stores mock provider invoices, scenarios and the delivery log.
 // The state is in-memory: the service is deterministically recreated in tests.
 type Service struct {
-	mu         sync.Mutex
-	sender     WebhookSender
-	invoices   map[string]domain.Invoice
-	byKey      map[string]string
-	deliveries []domain.WebhookDelivery
-	scenario   domain.Scenario
-	clock      func() time.Time
-	log        *zap.Logger
+	mu          sync.Mutex
+	sender      WebhookSender
+	targets     TargetResolver
+	invoices    map[string]domain.Invoice
+	byKey       map[string]string
+	deliveries  []domain.WebhookDelivery
+	scenario    domain.Scenario
+	nextOrderID int64
+	clock       func() time.Time
+	log         *zap.Logger
 }
 
 // Option configures Service.
@@ -95,6 +113,15 @@ func WithClock(clock func() time.Time) Option {
 	return func(s *Service) {
 		if clock != nil {
 			s.clock = clock
+		}
+	}
+}
+
+// WithTargets sets the webhook target resolver of the profiles.
+func WithTargets(targets TargetResolver) Option {
+	return func(s *Service) {
+		if targets != nil {
+			s.targets = targets
 		}
 	}
 }
@@ -119,16 +146,30 @@ func NewService(sender WebhookSender, log *zap.Logger, opts ...Option) *Service 
 
 // CreateInvoice creates an invoice; a repeat with the same Idempotency-Key returns the original invoice.
 func (s *Service) CreateInvoice(ctx context.Context, req domain.CreateInvoiceRequest) (domain.Invoice, bool, error) {
+	provider := req.Provider
+	if provider == "" {
+		provider = domain.ProfileMock
+	}
+	profile, ok := domain.ProfileByID(string(provider))
+	if !ok {
+		return domain.Invoice{}, false, fmt.Errorf("%w: unknown provider %q", domain.ErrInvalidRequest, provider)
+	}
+	req.Provider = provider
 	if err := req.Validate(); err != nil {
 		return domain.Invoice{}, false, err
 	}
 	if err := s.applyScenario(ctx); err != nil {
 		return domain.Invoice{}, false, err
 	}
+	rawStatus, err := profile.RawStatus(domain.StatusPending)
+	if err != nil {
+		return domain.Invoice{}, false, err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if key := strings.TrimSpace(req.IdempotencyKey); key != "" {
+	key := replayKey(provider, req.IdempotencyKey)
+	if trimmed := strings.TrimSpace(req.IdempotencyKey); trimmed != "" {
 		if gatewayID, ok := s.byKey[key]; ok {
 			return s.invoices[gatewayID], true, nil
 		}
@@ -136,18 +177,20 @@ func (s *Service) CreateInvoice(ctx context.Context, req domain.CreateInvoiceReq
 	if len(s.invoices) >= maxInvoices {
 		return domain.Invoice{}, false, fmt.Errorf("%w: limit %d", domain.ErrStoreFull, maxInvoices)
 	}
-	gatewayID, err := uuid.NewV7()
+	gatewayID, err := s.newGatewayID(profile)
 	if err != nil {
-		return domain.Invoice{}, false, fmt.Errorf("usecase: generate gateway id: %w", err)
+		return domain.Invoice{}, false, err
 	}
 	now := s.clock().UTC()
 	invoice := domain.Invoice{
-		GatewayID: gatewayID.String(),
+		GatewayID: gatewayID,
+		Provider:  provider,
 		PaymentID: strings.TrimSpace(req.PaymentID),
-		Address:   mockAddress(gatewayID.String()),
+		Address:   mockAddress(gatewayID),
 		Network:   strings.TrimSpace(req.Network),
 		Amount:    req.Amount,
 		Status:    domain.StatusPending,
+		RawStatus: rawStatus,
 		ReceivedAmount: money.Money{
 			Asset:    req.Amount.Asset,
 			Decimals: req.Amount.Decimals,
@@ -156,14 +199,43 @@ func (s *Service) CreateInvoice(ctx context.Context, req domain.CreateInvoiceReq
 		CreatedAt: now,
 	}
 	s.invoices[invoice.GatewayID] = invoice
-	if key := strings.TrimSpace(req.IdempotencyKey); key != "" {
+	if trimmed := strings.TrimSpace(req.IdempotencyKey); trimmed != "" {
 		s.byKey[key] = invoice.GatewayID
 	}
 	s.log.Info("mock invoice created",
 		zap.String("gateway_id", invoice.GatewayID),
 		zap.String("payment_id", invoice.PaymentID),
+		zap.String("provider", string(provider)),
 	)
 	return invoice, false, nil
+}
+
+// newGatewayID generates the profile-shaped invoice identifier: UUIDv7 for the
+// mock and NOWPayments, a monotonic integer for CoinGate, 22 alphanumeric
+// characters for BitPay and 32 hex characters for BTCPay.
+func (s *Service) newGatewayID(profile domain.Profile) (string, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return "", fmt.Errorf("usecase: generate gateway id: %w", err)
+	}
+	compact := strings.ReplaceAll(id.String(), "-", "")
+	switch profile.ID {
+	case domain.ProfileCoinGate:
+		s.nextOrderID++
+		return strconv.FormatInt(s.nextOrderID, 10), nil
+	case domain.ProfileBitPay:
+		return compact[:22], nil
+	case domain.ProfileBTCPay:
+		return compact, nil
+	default:
+		return id.String(), nil
+	}
+}
+
+// replayKey scopes the idempotency map by provider so order ids cannot collide
+// across profiles (spec decision T-MOCK-07).
+func replayKey(provider domain.ProfileID, key string) string {
+	return string(provider) + ":" + strings.TrimSpace(key)
 }
 
 // GetInvoice returns an invoice by the provider identifier.
@@ -189,6 +261,24 @@ func (s *Service) Simulate(ctx context.Context, req domain.SimulateRequest) (Sim
 	if err != nil {
 		return SimulateResult{}, err
 	}
+	provider := req.Provider
+	if provider == "" {
+		provider = domain.ProfileMock
+	}
+	profile, ok := domain.ProfileByID(string(provider))
+	if !ok {
+		return SimulateResult{}, fmt.Errorf("%w: unknown provider %q", domain.ErrInvalidRequest, provider)
+	}
+	rawStatus := req.RawStatus
+	if rawStatus == "" {
+		rawStatus, err = profile.RawStatus(status)
+		if err != nil {
+			return SimulateResult{}, err
+		}
+	}
+	if s.targets != nil && !s.targets.HasTarget(provider) {
+		return SimulateResult{}, fmt.Errorf("%w: missing_webhook_target for provider %q", domain.ErrInvalidRequest, provider)
+	}
 
 	s.mu.Lock()
 	gatewayID := strings.TrimSpace(req.GatewayID)
@@ -196,6 +286,12 @@ func (s *Service) Simulate(ctx context.Context, req domain.SimulateRequest) (Sim
 	if !ok {
 		s.mu.Unlock()
 		return SimulateResult{}, fmt.Errorf("%w: %s", domain.ErrInvoiceNotFound, gatewayID)
+	}
+	if invoice.Provider != provider {
+		s.mu.Unlock()
+		// The provider of an invoice is fixed at creation (spec E-11): a
+		// mismatched simulate would sign a body with the wrong scheme.
+		return SimulateResult{}, fmt.Errorf("%w: provider_mismatch: invoice belongs to %q", domain.ErrInvalidRequest, invoice.Provider)
 	}
 	eventTS := s.clock().UTC()
 	if req.EventTS != nil {
@@ -206,6 +302,7 @@ func (s *Service) Simulate(ctx context.Context, req domain.SimulateRequest) (Sim
 		received = *req.ReceivedAmount
 	}
 	invoice.Status = status
+	invoice.RawStatus = rawStatus
 	invoice.ReceivedAmount = received
 	invoice.Confirmations = req.Confirmations
 	invoice.TXID = strings.TrimSpace(req.TXID)
@@ -219,9 +316,12 @@ func (s *Service) Simulate(ctx context.Context, req domain.SimulateRequest) (Sim
 	}
 	event := WebhookEvent{
 		EventID:        eventID.String(),
+		Provider:       provider,
 		PaymentID:      invoice.PaymentID,
 		GatewayID:      invoice.GatewayID,
 		Status:         status,
+		RawStatus:      rawStatus,
+		Amount:         invoice.Amount,
 		ReceivedAmount: received,
 		Confirmations:  req.Confirmations,
 		TXID:           invoice.TXID,
@@ -244,10 +344,12 @@ func (s *Service) Simulate(ctx context.Context, req domain.SimulateRequest) (Sim
 	result := SimulateResult{EventID: event.EventID, Deliveries: make([]Delivery, 0, attempts)}
 	for i := 0; i < attempts; i++ {
 		delivery := s.sender.Send(sendCtx, event)
+		delivery.Provider = provider
 		result.Deliveries = append(result.Deliveries, delivery)
 		s.appendDelivery(domain.WebhookDelivery{
 			EventID:    event.EventID,
 			GatewayID:  event.GatewayID,
+			Provider:   event.Provider,
 			Status:     event.Status,
 			Mode:       event.Mode,
 			SentAt:     delivery.SentAt,
@@ -304,7 +406,11 @@ func (s *Service) applyScenario(ctx context.Context) error {
 		}
 	}
 	if scenario.FailNext > 0 {
-		return fmt.Errorf("%w: fail_next", domain.ErrInjectedFailure)
+		status := scenario.FailStatus
+		if status == 0 {
+			status = 503
+		}
+		return domain.InjectedFailureError{Status: status, RetryAfterS: scenario.RetryAfterS}
 	}
 	return nil
 }

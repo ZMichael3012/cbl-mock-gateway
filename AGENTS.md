@@ -8,7 +8,8 @@ The em dash (U+2014) is forbidden, only the hyphen is used.
 
 ## 1. Boundaries
 
-In scope: invoice creation, statuses, signed webhooks, failure scenarios.
+In scope: invoice creation, statuses, signed webhooks, failure scenarios, provider
+emulation profiles (CBL-17.5) for contract tests without network access.
 
 Out of scope: other platform services; interaction only through `cbl-protos` contracts
 (gRPC), Kafka and the perimeter REST (see `CBL-000`, section 2).
@@ -16,9 +17,17 @@ Out of scope: other platform services; interaction only through `cbl-protos` con
 ## 2. Contracts
 
 - REST: `POST /api/v1/invoices`, `GET /api/v1/invoices/{gateway_id}` - emulation of the
-  provider API; `POST /api/v1/simulate` - sending signed webhooks; `GET /api/v1/webhooks`
-  - delivery log; `POST|GET /api/v1/scenarios`, `POST /api/v1/scenarios/reset` - failure
-  scenarios; webhooks go to Webhook Ingress under the sandbox provider contract (CBL-3.5)
+  sandbox provider (mock profile, unchanged since 3.6); `POST /api/v1/simulate` - sending
+  signed webhooks; `GET /api/v1/webhooks` - delivery log; `POST|GET /api/v1/scenarios`,
+  `POST /api/v1/scenarios/reset` - failure scenarios; webhooks go to Webhook Ingress under
+  the sandbox provider contract (CBL-3.5)
+- REST provider profiles (CBL-17.5): NOWPayments `POST /v1/invoice`,
+  `GET /v1/payment/{id}` (`x-api-key`); CoinGate `POST /v2/orders`,
+  `GET /v2/orders/{id}` (`Authorization: Bearer`); BitPay `POST /invoices`,
+  `GET /invoices/{id}` (`X-Identity`/`X-Signature` presence); BTCPay
+  `POST /api/v1/stores/{store_id}/invoices`, `GET /api/v1/stores/{store_id}/invoices/{id}`
+  (`Authorization: token`); the wire shapes, statuses and signatures are the profile
+  contract (spec section 3.2)
 - gRPC: none
 - Kafka produces: none
 - Kafka consumes: none
@@ -31,9 +40,16 @@ Contracts are frozen in `cbl-protos` (CF-1 for gRPC, CF-2/CF-3 for events), see 
 Layers: `internal/transport` -> `internal/usecase` -> `internal/domain`; sending signed
 webhooks - the `internal/webhook` adapter through the `usecase.WebhookSender` port.
 `internal/storage` is not used: the stand state is in-memory (T-MOCK-01).
-Libraries: Gin, zap, cbl-kit (hmac, ginmw, money), google/uuid; GORM, franz-go, go-redis,
-goose and PostgreSQL are not needed by the mock service - the deviation from the CBL-002
-set is recorded by trade-off T-MOCK-01.
+Provider profiles (17.5): `internal/domain/profiles.go` and `profile_api.go` hold the
+profile catalogue (status tables, auth rules, signatures, wire shapes), the transport
+mounts the provider routes from the profile route table (`routesOf`) with generic
+handlers, `internal/webhook/profiles.go` builds profile bodies and signatures (kit
+`webhooksig` canonical serializer, stdlib HMAC, fail closed) and the `webhook.Switch`
+routes events to per-profile senders; profile targets derive from `WEBHOOK_TARGET_URL`
+by replacing `/hooks/mock/`.
+Libraries: Gin, zap, cbl-kit (hmac, webhooksig, ginmw, money), google/uuid; GORM, franz-go,
+go-redis, goose and PostgreSQL are not needed by the mock service - the deviation from the
+CBL-002 set is recorded by trade-off T-MOCK-01.
 
 ## 4. Commands
 
@@ -58,6 +74,11 @@ Variables (applicable to the service): `HTTP_ADDR`, `METRICS_ADDR`, `WEBHOOK_TAR
 (default `http://localhost:8060/hooks/mock/ep1`), `WEBHOOK_SECRET` (default `mock-secret`),
 `WEBHOOK_SIGNATURE_HEADER` (default `X-Billing-Signature`), `WEBHOOK_EVENT_ID_HEADER`
 (default `X-Event-Id`), `WEBHOOK_TIMEOUT` (default 5s).
+Profile variables (17.5): `WEBHOOK_TARGET_URL_<PROVIDER>` (NOWPAYMENTS, COINGATE, BITPAY,
+BTCPAY) override the derived target; `WEBHOOK_SECRET_NOWPAYMENTS`,
+`WEBHOOK_SECRET_COINGATE`, `WEBHOOK_SECRET_BITPAY`, `WEBHOOK_SECRET_BTCPAY` set the
+webhook signing secrets (stand defaults `mock-nowpayments-secret`, `mock-coingate-token`,
+`mock-bitpay-secret`, `mock-btcpay-secret`).
 
 ## 6. Development rules
 
@@ -85,6 +106,9 @@ consumer lag; dashboards after task 0.7.
 | T-MOCK-02 | `simulate` responds `200` for a valid request with the delivery list | tests distinguish non-delivery by `http_status`/log | non-delivery is not visible by the response code | the `GET /api/v1/webhooks` log, the `error` field and `mode` record the result; validation errors give 400/404/413/503 |
 | T-MOCK-03 | The webhook format repeats contract CBL-3.5 (sandbox provider) | single source of the format for Connector and tests | the mock does not check the format on a live gateway | divergence only through updating both specs; real codes - 3.2 |
 | T-MOCK-04 | Recipient redirects are not followed; simulate delivery is detached from the client context (90 s) | the body and signature do not go to a redirect; a client disconnect does not lose the webhook | the `delay` scenario occupies the handler until completion | scenario limits (5 s/10 duplicates) and `WriteTimeout` 75 s are derived together |
+| T-MOCK-05 | Provider limits are emulated by error injection (`fail_status` 429/500/502/503 plus `retry_after_s`), not by implicit counters | deterministic tests; the provider official limits are documented per profile for adapter limiter config | a burst of accepted calls never trips a real leaky bucket on the stand | real limiter behavior is tested on the connector side (kit ratelimit, 17.3); 429 handling paths are exercised deterministically |
+| T-MOCK-06 | BitPay profile checks only the presence and base64 shape of `X-Identity`/`X-Signature`, not the ECDSA signature | no secp256k1 dependency in the stand | a wrong request signature is not detected by the mock | real signing is validated against the BitPay test stand (17.8); the IPN `x-signature` side is fully verified |
+| T-MOCK-07 | The replay map is scoped by provider plus order id | the same order id cannot collide across profiles; adapters can test replay per provider | the stand dedupes by order id even where the real provider does not | documented stand aid; the connector idempotency contract is tested by the conformance suite CONF-9 |
 
 ## 9. Known issues
 
@@ -99,14 +123,26 @@ consumer lag; dashboards after task 0.7.
 | :-- | :-- | :-- | :-- | :-- |
 | CBL-3.6 | 2026-10-14 | done, review closed (provider API, signed webhooks, failure scenarios, contract e2e, coverage 89.4%) | `.specs/CBL-3.6-mock-gateway.md` | `5cb4e7d` |
 | CBL-16.10 | 2026-10-16 | done (English comments and documentation across the repository: code, tests, configs, the spec, AGENTS.md, README; e2e runs via `test/e2e/E2E.md` with scenario E2E_MockGateway_Smoke, `smoke.ps1` and `make smoke` removed; validation run PASS; coverage unchanged) | `.specs/CBL-16.10-conventions.md` | this commit |
+| CBL-17.5 | 2026-10-17 | done, review closed (provider emulation profiles: five profiles with wire shapes, status tables, auth rules and signatures (canonical JSON HMAC-SHA512 of NOWPayments, token echo of CoinGate, raw HMAC base64 of BitPay, raw HMAC hex with the `sha256=` prefix of BTCPay); generic profile routes in the transport (route table `routesOf`); `webhook.ProfileSender`/`Switch` with `DeriveTarget`; simulate gained `provider`/`raw_status`, the scenario gained `fail_status`/`retry_after_s`; the delivery log carries the provider; in-process e2e scenario E2E_MockGateway_ProviderProfiles and the compose scenario E2E_MockGateway_Profiles; 4 review passes on the staged diff, findings closed: cross-profile reads answer 404 and a mismatched simulate answers 400 `provider_mismatch`, the invalid token echo derives from the secret, ProfileWebhook fails closed on a signing error, legacy problem details translated to English, signature-mode and status-matrix test gaps filled; unit coverage total 88.0%, e2e green, lint 0) | `.specs/CBL-17.5-provider-profiles.md` | this commit |
 
 ## 11. Runbook
 
 Mock-gateway stand diagnostics:
 
-1. `GET /api/v1/scenarios`: whether `fail_next`/`latency_ms` are enabled; reset - `/scenarios/reset`.
-2. `GET /api/v1/webhooks`: the latest deliveries with `http_status` and `error`; code 0 - a
-   network failure (check `WEBHOOK_TARGET_URL` and Webhook Ingress), 401 - the signature was
-   rejected (`invalid`/`missing` mode or the secret does not match the Ingress provider).
+1. `GET /api/v1/scenarios`: whether `fail_next`/`latency_ms`/`fail_status`/`retry_after_s`
+   are enabled; reset - `/scenarios/reset`.
+2. `GET /api/v1/webhooks`: the latest deliveries with `provider`, `http_status` and
+   `error`; code 0 - a network failure (check `WEBHOOK_TARGET_URL` and Webhook Ingress),
+   401 - the signature was rejected (`invalid`/`missing` mode or the secret does not match
+   the Ingress provider).
 3. Invoice not found - the in-memory state is lost on restart, recreate the invoice.
-4. The secret and signature headers must match the Webhook Ingress configuration.
+4. The secret and signature headers must match the Webhook Ingress configuration; for
+   profiles check `WEBHOOK_SECRET_<PROVIDER>` and the derived or explicit target
+   (`WEBHOOK_TARGET_URL_<PROVIDER>`).
+5. Profile route 401: the expected header of the profile is missing or malformed
+   (NOWPayments `x-api-key`, CoinGate `Bearer`, BTCPay `token`; BitPay requires a base64
+   `X-Signature`).
+6. Profile create answers 400: the provider-shaped body field or amount failed validation
+   (the problem `detail` names the field); `400 missing_webhook_target` on simulate for a
+   profile means the base URL has no `/hooks/mock/` segment and no explicit env target is
+   set.
