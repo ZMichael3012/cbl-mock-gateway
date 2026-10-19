@@ -189,11 +189,17 @@ func TestProfileParseCreateInvoiceNOWPayments(t *testing.T) {
 func TestProfileParseCreateInvoiceCoinGate(t *testing.T) {
 	profile := mustProfile(t, "coingate")
 	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
-	body := `{"order_id":"` + profilePaymentID + `","price_amount":"12.34","price_currency":"USDT","pay_currency":"USDT_TRC20"}`
+	// The connector body after 17.26: a fiat-priced stablecoin order carrying
+	// our IPN token, the callback URL and the merchant title/description.
+	body := `{"order_id":"` + profilePaymentID + `","price_amount":"12.34","price_currency":"USD","pay_currency":"USDT_TRC20","title":"CBL payment","description":"` + profilePaymentID + `","token":"ipn-token","callback_url":"https://example.test/hooks/coingate/stand"}`
 	request, err := profile.ParseCreateInvoice([]byte(body), now)
 	require.NoError(t, err)
-	assert.Equal(t, int64(12_340_000), request.Amount.MinorUnits)
+	assert.Equal(t, int64(1234), request.Amount.MinorUnits)
+	assert.Equal(t, "USD", request.Amount.Asset)
 	assert.Equal(t, "usdt_trc20", request.Network)
+
+	_, err = profile.ParseCreateInvoice([]byte(`{"order_id":"nope","price_amount":"12.34","price_currency":"USD","pay_currency":"USDT_TRC20"}`), now)
+	require.Error(t, err)
 }
 
 func TestProfileParseCreateInvoiceBitPay(t *testing.T) {

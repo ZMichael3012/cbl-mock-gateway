@@ -195,6 +195,11 @@ Request and response shapes:
   amounts are decimal strings with 6 fraction digits; `status` is the raw provider
   status; `network = LOWER(pay_currency)`. Get answers the same shape with the
   current status.
+  Correction 19.10.2026 (17.26): the connector sends the merchant `title` and
+  `description` plus its IPN `token` at creation (the real API accepts them and
+  echoes the token); the strict decode now accepts these fields, and the
+  connector prices stablecoin orders in fiat (USD) because CoinGate rejects
+  crypto price currencies (connector T-CONNECTOR-27).
 - bitpay create: `{price, currency, token, orderId, notificationURL?, redirectURL?,
   posData?}`; per the official API `price` is a decimal number in major units of
   the pricing currency (the platform sends the crypto amount), `token` is the

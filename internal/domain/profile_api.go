@@ -33,7 +33,9 @@ type nowCreateRequest struct {
 	CancelURL        string `json:"cancel_url"`
 }
 
-// coinGateCreateRequest describes the CoinGate order creation body.
+// coinGateCreateRequest describes the CoinGate order creation body; the
+// connector sends the merchant title/description and its IPN token since 17.26,
+// so the stand accepts them for wire parity (the real API does too).
 type coinGateCreateRequest struct {
 	OrderID       string `json:"order_id"`
 	PriceAmount   string `json:"price_amount"`
@@ -41,6 +43,9 @@ type coinGateCreateRequest struct {
 	PayCurrency   string `json:"pay_currency"`
 	CallbackURL   string `json:"callback_url"`
 	CancelURL     string `json:"cancel_url"`
+	Title         string `json:"title"`
+	Description   string `json:"description"`
+	Token         string `json:"token"`
 }
 
 // bitPayCreateRequest describes the BitPay invoice creation body.
