@@ -73,6 +73,21 @@ type btcPayCreateRequest struct {
 	} `json:"checkout"`
 }
 
+// btcPayPullPaymentCreate describes the BTCPay pull payment creation body.
+type btcPayPullPaymentCreate struct {
+	Name          string   `json:"name"`
+	Amount        string   `json:"amount"`
+	Currency      string   `json:"currency"`
+	PayoutMethods []string `json:"payoutMethods"`
+}
+
+// btcPayPayoutCreate describes the BTCPay payout creation body.
+type btcPayPayoutCreate struct {
+	Destination    string `json:"destination"`
+	Amount         string `json:"amount"`
+	PayoutMethodID string `json:"payoutMethodId"`
+}
+
 // ParseCreateInvoice parses the provider-shaped creation body into the platform
 // request; now fixes the expiration (profileInvoiceTTL) and the order id serves
 // as the idempotency key of the stand.
@@ -168,6 +183,57 @@ func decodeStrictProfileJSON(body []byte, dst any) error {
 		return fmt.Errorf("%w: unexpected trailing json", ErrInvalidRequest)
 	}
 	return nil
+}
+
+// ParsePullPaymentCreate parses the provider-shaped pull payment creation body;
+// only the BTCPay profile emulates payouts (T-MOCK-12). The parsed request is
+// validated (Validate) so the field rules live in one place.
+func (p Profile) ParsePullPaymentCreate(body []byte) (PullPaymentRequest, error) {
+	if p.ID != ProfileBTCPay {
+		return PullPaymentRequest{}, fmt.Errorf("%w: provider %q has no payout API", ErrInvalidRequest, p.ID)
+	}
+	var decoded btcPayPullPaymentCreate
+	if err := decodeStrictProfileJSON(body, &decoded); err != nil {
+		return PullPaymentRequest{}, err
+	}
+	amount, err := ParseAssetAmount(decoded.Currency, decoded.Amount)
+	if err != nil {
+		return PullPaymentRequest{}, err
+	}
+	request := PullPaymentRequest{Name: strings.TrimSpace(decoded.Name), Amount: amount}
+	for _, method := range decoded.PayoutMethods {
+		request.PayoutMethods = append(request.PayoutMethods, strings.TrimSpace(method))
+	}
+	if err := request.Validate(); err != nil {
+		return PullPaymentRequest{}, err
+	}
+	return request, nil
+}
+
+// ParsePayoutCreate parses the provider-shaped payout creation body; the
+// amount is a decimal string of the payout method asset.
+func (p Profile) ParsePayoutCreate(body []byte) (PayoutRequest, error) {
+	if p.ID != ProfileBTCPay {
+		return PayoutRequest{}, fmt.Errorf("%w: provider %q has no payout API", ErrInvalidRequest, p.ID)
+	}
+	var decoded btcPayPayoutCreate
+	if err := decodeStrictProfileJSON(body, &decoded); err != nil {
+		return PayoutRequest{}, err
+	}
+	request := PayoutRequest{
+		Destination: strings.TrimSpace(decoded.Destination),
+		MethodID:    strings.TrimSpace(decoded.PayoutMethodID),
+	}
+	asset := strings.TrimSuffix(request.MethodID, "-CHAIN")
+	amount, err := ParseAssetAmount(asset, decoded.Amount)
+	if err != nil {
+		return PayoutRequest{}, err
+	}
+	request.Amount = amount
+	if err := request.Validate(); err != nil {
+		return PayoutRequest{}, err
+	}
+	return request, nil
 }
 
 // checkoutURL builds the stand-in hosted page URL of a profile invoice.
@@ -325,6 +391,52 @@ func (p Profile) CreateInvoiceResponse(invoice Invoice) (any, error) {
 	default:
 		return nil, fmt.Errorf("%w: provider %q has no profile API", ErrInvalidRequest, p.ID)
 	}
+}
+
+// btcPayPullPaymentResponse describes the BTCPay pull payment body; the
+// connector consumes the id, the stand renders the full object.
+type btcPayPullPaymentResponse struct {
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	Amount        string   `json:"amount"`
+	Currency      string   `json:"currency"`
+	PayoutMethods []string `json:"payoutMethods"`
+	ViewLink      string   `json:"viewLink"`
+}
+
+// btcPayPayoutResponse describes the BTCPay payout body; the connector reads
+// the id and the state word.
+type btcPayPayoutResponse struct {
+	ID            string `json:"id"`
+	State         string `json:"state"`
+	PullPaymentID string `json:"pullPaymentId"`
+}
+
+// PullPaymentResponse maps a pull payment into the provider-shaped body.
+func (p Profile) PullPaymentResponse(pull PullPayment) (any, error) {
+	if p.ID != ProfileBTCPay {
+		return nil, fmt.Errorf("%w: provider %q has no payout API", ErrInvalidRequest, p.ID)
+	}
+	return btcPayPullPaymentResponse{
+		ID:            pull.ID,
+		Name:          pull.Name,
+		Amount:        pull.Amount.String(),
+		Currency:      pull.Amount.Asset,
+		PayoutMethods: pull.PayoutMethods,
+		ViewLink:      fmt.Sprintf("https://mock-provider.local/btcpay/pull-payments/%s", pull.ID),
+	}, nil
+}
+
+// PayoutResponse maps a payout into the provider-shaped body.
+func (p Profile) PayoutResponse(payout Payout) (any, error) {
+	if p.ID != ProfileBTCPay {
+		return nil, fmt.Errorf("%w: provider %q has no payout API", ErrInvalidRequest, p.ID)
+	}
+	return btcPayPayoutResponse{
+		ID:            payout.ID,
+		State:         payout.State,
+		PullPaymentID: payout.PullPaymentID,
+	}, nil
 }
 
 // PaymentResponse maps an invoice into the provider-shaped payment body.

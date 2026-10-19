@@ -139,7 +139,7 @@ func profileRoutes() map[string]struct {
 		"coingate": {path: "/v2/orders", headers: map[string]string{"Authorization": "Bearer cg-token"},
 			body: `{"order_id":"` + profileE2EPaymentID + `","price_amount":"12.34","price_currency":"USDT","pay_currency":"USDT_TRC20"}`, idField: "id"},
 		"bitpay": {path: "/invoices", headers: map[string]string{"X-Identity": "id-1", "X-Signature": "c2ln"},
-			body: `{"price":12340000,"currency":"USDT","orderId":"` + profileE2EPaymentID + `"}`, idField: "id"},
+			body: `{"token":"tok","price":"12.34","currency":"USDT","orderId":"` + profileE2EPaymentID + `"}`, idField: "id"},
 		"btcpay": {path: "/api/v1/stores/store-1/invoices", headers: map[string]string{"Authorization": "token btc-key"},
 			body: `{"amount":"12.34","currency":"USDT","metadata":{"orderId":"` + profileE2EPaymentID + `","orderNetwork":"trc20"}}`, idField: "id"},
 	}
@@ -190,6 +190,12 @@ func gatewayIDFromProfile(t *testing.T, payload []byte) string {
 	decoder.UseNumber()
 	var response map[string]any
 	require.NoError(t, decoder.Decode(&response))
+	if response["facade"] == "merchant/invoice" {
+		// The real API wraps invoice bodies in the facade envelope (17.8).
+		if data, ok := response["data"].(map[string]any); ok {
+			response = data
+		}
+	}
 	switch id := response["id"].(type) {
 	case string:
 		require.NotEmpty(t, id)

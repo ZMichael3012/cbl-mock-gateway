@@ -23,6 +23,13 @@ const deliveriesLimit = 100
 // the unauthenticated stand must not grow without bound (review 3.6).
 const maxInvoices = 1000
 
+// maxPullPayments and maxPayouts bound the payout emulation stores the same
+// way (CBL-17.27).
+const (
+	maxPullPayments = 1000
+	maxPayouts      = 1000
+)
+
 // simulateSendBudget sets the budget of simulate background deliveries: the webhook must
 // be sent even when the client disconnects, but it must not hang forever.
 const simulateSendBudget = 90 * time.Second
@@ -93,16 +100,19 @@ type SimulateResult struct {
 // Service stores mock provider invoices, scenarios and the delivery log.
 // The state is in-memory: the service is deterministically recreated in tests.
 type Service struct {
-	mu          sync.Mutex
-	sender      WebhookSender
-	targets     TargetResolver
-	invoices    map[string]domain.Invoice
-	byKey       map[string]string
-	deliveries  []domain.WebhookDelivery
-	scenario    domain.Scenario
-	nextOrderID int64
-	clock       func() time.Time
-	log         *zap.Logger
+	mu           sync.Mutex
+	sender       WebhookSender
+	targets      TargetResolver
+	invoices     map[string]domain.Invoice
+	byKey        map[string]string
+	pullPayments map[string]domain.PullPayment
+	pullByName   map[string]string
+	payouts      map[string]domain.Payout
+	deliveries   []domain.WebhookDelivery
+	scenario     domain.Scenario
+	nextOrderID  int64
+	clock        func() time.Time
+	log          *zap.Logger
 }
 
 // Option configures Service.
@@ -132,11 +142,14 @@ func NewService(sender WebhookSender, log *zap.Logger, opts ...Option) *Service 
 		log = zap.NewNop()
 	}
 	service := &Service{
-		sender:   sender,
-		invoices: make(map[string]domain.Invoice),
-		byKey:    make(map[string]string),
-		clock:    time.Now,
-		log:      log,
+		sender:       sender,
+		invoices:     make(map[string]domain.Invoice),
+		byKey:        make(map[string]string),
+		pullPayments: make(map[string]domain.PullPayment),
+		pullByName:   make(map[string]string),
+		payouts:      make(map[string]domain.Payout),
+		clock:        time.Now,
+		log:          log,
 	}
 	for _, opt := range opts {
 		opt(service)
@@ -252,7 +265,9 @@ func (s *Service) GetInvoice(ctx context.Context, gatewayID string) (domain.Invo
 	return invoice, nil
 }
 
-// Simulate updates the invoice state and sends a webhook (or several duplicates).
+// Simulate updates the invoice state and sends a webhook (or several duplicates);
+// a silent simulate updates the state without any delivery (it models a lost
+// webhook and injects provider-side divergence for reconciliation, T-MOCK-10).
 func (s *Service) Simulate(ctx context.Context, req domain.SimulateRequest) (SimulateResult, error) {
 	if err := req.Validate(); err != nil {
 		return SimulateResult{}, err
@@ -276,7 +291,7 @@ func (s *Service) Simulate(ctx context.Context, req domain.SimulateRequest) (Sim
 			return SimulateResult{}, err
 		}
 	}
-	if s.targets != nil && !s.targets.HasTarget(provider) {
+	if !req.Silent && s.targets != nil && !s.targets.HasTarget(provider) {
 		return SimulateResult{}, fmt.Errorf("%w: missing_webhook_target for provider %q", domain.ErrInvalidRequest, provider)
 	}
 
@@ -309,6 +324,10 @@ func (s *Service) Simulate(ctx context.Context, req domain.SimulateRequest) (Sim
 	invoice.EventTS = eventTS
 	s.invoices[gatewayID] = invoice
 	s.mu.Unlock()
+
+	if req.Silent {
+		return SimulateResult{}, nil
+	}
 
 	eventID, err := uuid.NewV7()
 	if err != nil {
@@ -358,6 +377,185 @@ func (s *Service) Simulate(ctx context.Context, req domain.SimulateRequest) (Sim
 		})
 	}
 	return result, nil
+}
+
+// CreatePullPayment creates a pull payment; a repeat with the same name returns
+// the original one (T-MOCK-09: the connector sends the platform payout id or
+// refund-<id> as the name, so a retry cannot orphan a second pull payment).
+func (s *Service) CreatePullPayment(ctx context.Context, req domain.PullPaymentRequest) (domain.PullPayment, bool, error) {
+	if err := req.Validate(); err != nil {
+		return domain.PullPayment{}, false, err
+	}
+	if err := s.applyScenario(ctx); err != nil {
+		return domain.PullPayment{}, false, err
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return domain.PullPayment{}, false, fmt.Errorf("%w: pull payment name is required", domain.ErrInvalidRequest)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if gatewayID, ok := s.pullByName[name]; ok {
+		return s.pullPayments[gatewayID], true, nil
+	}
+	if len(s.pullPayments) >= maxPullPayments {
+		return domain.PullPayment{}, false, fmt.Errorf("%w: limit %d", domain.ErrStoreFull, maxPullPayments)
+	}
+	gatewayID, err := s.newBTCPayID()
+	if err != nil {
+		return domain.PullPayment{}, false, err
+	}
+	pull := domain.PullPayment{
+		ID:            gatewayID,
+		Name:          name,
+		Amount:        req.Amount,
+		PayoutMethods: append([]string(nil), req.PayoutMethods...),
+		CreatedAt:     s.clock().UTC(),
+	}
+	s.pullPayments[pull.ID] = pull
+	s.pullByName[name] = pull.ID
+	s.log.Info("mock pull payment created",
+		zap.String("pull_payment_id", pull.ID),
+		zap.String("name", pull.Name),
+	)
+	return pull, false, nil
+}
+
+// CreatePayout creates a payout against an existing pull payment; the stand
+// starts it in AwaitingApproval and the operator advances it with SimulatePayout
+// (T-MOCK-08: the stand never moves funds). The payout must be consistent with
+// the pull payment (the offered method and the held amount).
+func (s *Service) CreatePayout(ctx context.Context, pullPaymentID string, req domain.PayoutRequest) (domain.Payout, error) {
+	if err := req.Validate(); err != nil {
+		return domain.Payout{}, err
+	}
+	if err := s.applyScenario(ctx); err != nil {
+		return domain.Payout{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pullPaymentID = strings.TrimSpace(pullPaymentID)
+	pull, ok := s.pullPayments[pullPaymentID]
+	if !ok {
+		return domain.Payout{}, fmt.Errorf("%w: %s", domain.ErrPullPaymentNotFound, pullPaymentID)
+	}
+	if err := pull.AllowsPayout(req); err != nil {
+		return domain.Payout{}, err
+	}
+	if len(s.payouts) >= maxPayouts {
+		return domain.Payout{}, fmt.Errorf("%w: limit %d", domain.ErrStoreFull, maxPayouts)
+	}
+	gatewayID, err := s.newBTCPayID()
+	if err != nil {
+		return domain.Payout{}, err
+	}
+	payout := domain.Payout{
+		ID:            gatewayID,
+		PullPaymentID: pullPaymentID,
+		Destination:   strings.TrimSpace(req.Destination),
+		Amount:        req.Amount,
+		MethodID:      strings.TrimSpace(req.MethodID),
+		State:         domain.PayoutStateAwaitingApproval,
+		CreatedAt:     s.clock().UTC(),
+	}
+	s.payouts[payout.ID] = payout
+	s.log.Info("mock payout created",
+		zap.String("payout_id", payout.ID),
+		zap.String("pull_payment_id", payout.PullPaymentID),
+	)
+	return payout, nil
+}
+
+// GetPayout returns a payout by its provider identifier.
+func (s *Service) GetPayout(ctx context.Context, payoutID string) (domain.Payout, error) {
+	if err := s.applyScenario(ctx); err != nil {
+		return domain.Payout{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	payout, ok := s.payouts[strings.TrimSpace(payoutID)]
+	if !ok {
+		return domain.Payout{}, fmt.Errorf("%w: %s", domain.ErrPayoutNotFound, payoutID)
+	}
+	return payout, nil
+}
+
+// SimulatePayout sets the provider state of a payout (the stand control that
+// replaces the real operator approval and on-chain execution). It deliberately
+// does not apply the failure scenario: it is not a provider API call, and the
+// connector never invokes it (the operator does).
+func (s *Service) SimulatePayout(_ context.Context, payoutID, state string) (domain.Payout, error) {
+	state = strings.TrimSpace(state)
+	if !domain.ValidPayoutState(state) {
+		return domain.Payout{}, fmt.Errorf("%w: unknown payout state %q", domain.ErrInvalidRequest, state)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	payout, ok := s.payouts[strings.TrimSpace(payoutID)]
+	if !ok {
+		return domain.Payout{}, fmt.Errorf("%w: %s", domain.ErrPayoutNotFound, payoutID)
+	}
+	payout.State = state
+	s.payouts[payout.ID] = payout
+	s.log.Info("mock payout state simulated",
+		zap.String("payout_id", payout.ID),
+		zap.String("state", payout.State),
+	)
+	return payout, nil
+}
+
+// ExportInvoices returns the store invoices of one provider profile inside the
+// inclusive window, sorted and paged for the connector export walk (T-MOCK-12:
+// the stand store belongs to the BTCPay profile, the caller passes it so a
+// future profile cannot silently reuse the BTCPay wire).
+func (s *Service) ExportInvoices(ctx context.Context, provider domain.ProfileID, from, to time.Time, skip, take int) ([]domain.Invoice, error) {
+	if err := s.applyScenario(ctx); err != nil {
+		return nil, err
+	}
+	return domain.FilterInvoices(s.providerInvoices(provider), from, to, skip, take), nil
+}
+
+// LookupInvoicesByOrder returns the store invoices of one provider profile with
+// the given order reference: the real API supports the orderId filter on the
+// store list, and the connector lookup recovery (LookupByOrderID) relies on it;
+// an empty answer keeps the connector not-found classification.
+func (s *Service) LookupInvoicesByOrder(ctx context.Context, provider domain.ProfileID, orderID string) ([]domain.Invoice, error) {
+	if err := s.applyScenario(ctx); err != nil {
+		return nil, err
+	}
+	needle := strings.TrimSpace(orderID)
+	matches := make([]domain.Invoice, 0)
+	for _, invoice := range s.providerInvoices(provider) {
+		if invoice.PaymentID == needle {
+			matches = append(matches, invoice)
+		}
+	}
+	domain.SortInvoicesByCreated(matches)
+	return matches, nil
+}
+
+// providerInvoices returns a copy of the invoices of one provider profile.
+func (s *Service) providerInvoices(provider domain.ProfileID) []domain.Invoice {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	invoices := make([]domain.Invoice, 0, len(s.invoices))
+	for _, invoice := range s.invoices {
+		if invoice.Provider != provider {
+			continue
+		}
+		invoices = append(invoices, invoice)
+	}
+	return invoices
+}
+
+// newBTCPayID generates a provider-shaped identifier of the BTCPay profile
+// (32 hex characters), shared by pull payments and payouts.
+func (s *Service) newBTCPayID() (string, error) {
+	profile, ok := domain.ProfileByID(string(domain.ProfileBTCPay))
+	if !ok {
+		return "", fmt.Errorf("usecase: btcpay profile is not registered")
+	}
+	return s.newGatewayID(profile)
 }
 
 // ListDeliveries returns a copy of the delivery log in send order.

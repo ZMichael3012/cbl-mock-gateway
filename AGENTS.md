@@ -9,10 +9,14 @@ The em dash (U+2014) is forbidden, only the hyphen is used.
 ## 1. Boundaries
 
 In scope: invoice creation, statuses, signed webhooks, failure scenarios, provider
-emulation profiles (CBL-17.5) for contract tests without network access.
+emulation profiles (CBL-17.5) for contract tests without network access; since CBL-17.27
+the BTCPay profile also emulates the payout/refund wire (pull payment plus payout, the
+stand state control) and the store invoice list used by the connector export, and
+`POST /api/v1/simulate` gained the `silent` flag.
 
 Out of scope: other platform services; interaction only through `cbl-protos` contracts
-(gRPC), Kafka and the perimeter REST (see `CBL-000`, section 2).
+(gRPC), Kafka and the perimeter REST (see `CBL-000`, section 2); no fund movement (the
+stand never pays out, the operator advances payout states).
 
 ## 2. Contracts
 
@@ -30,6 +34,14 @@ Out of scope: other platform services; interaction only through `cbl-protos` con
   `POST /api/v1/stores/{store_id}/invoices`, `GET /api/v1/stores/{store_id}/invoices/{id}`
   (`Authorization: token`); the wire shapes, statuses and signatures are the profile
   contract (spec section 3.2)
+- REST provider payout/export emulation (CBL-17.27, BTCPay only): `POST
+  /api/v1/stores/{store_id}/pull-payments` (same-name replay),
+  `POST /api/v1/pull-payments/{pull_payment_id}/payouts`,
+  `GET /api/v1/stores/{store_id}/payouts/{payout_id}`,
+  `POST /api/v1/payouts/{payout_id}/simulate` (stand control),
+  `GET /api/v1/stores/{store_id}/invoices?startDate&endDate&skip&take` (the export
+  walk) and `?orderId=` (the connector lookup); `POST /api/v1/simulate` gains
+  `silent` (state change without webhooks)
 - gRPC: none
 - Kafka produces: none
 - Kafka consumes: none
@@ -49,6 +61,18 @@ handlers, `internal/webhook/profiles.go` builds profile bodies and signatures (k
 `webhooksig` canonical serializer, stdlib HMAC, fail closed) and the `webhook.Switch`
 routes events to per-profile senders; profile targets derive from `WEBHOOK_TARGET_URL`
 by replacing `/hooks/mock/`.
+Payout, refund and export emulation (17.27): `internal/domain/payout.go` holds the
+`PullPayment`/`Payout` models, the state vocabulary of the connector payoutStates table,
+the request `Validate()` rules, `PullPayment.AllowsPayout` (method and amount
+consistency) and the deterministic store-list ordering (`SortInvoicesByCreated`,
+`FilterInvoices` at wire (unix second) granularity); `internal/usecase/service.go` keeps
+the in-memory pull payment and payout stores (caps, name replay, the scenario injection)
+and the store list/lookup (`ExportInvoices`, `LookupInvoicesByOrder`); the transport
+mounts the optional payout routes from `profileRoutes.payout` (BTCPay only) and the
+stand payout state control; the `silent` simulate flag updates an invoice without
+webhooks. The wire shapes mirror the real Greenfield flow verified in the 17.9 regtest
+run and the connector adapter (pull payment, payout, `AwaitingApproval`/`Completed`
+states, the invoice list body).
 Libraries: Gin, zap, cbl-kit (hmac, webhooksig, ginmw, money), google/uuid; GORM, franz-go,
 go-redis, goose and PostgreSQL are not needed by the mock service - the deviation from the
 CBL-002 set is recorded by trade-off T-MOCK-01.
@@ -108,7 +132,14 @@ consumer lag; dashboards after task 0.7.
 | T-MOCK-02 | `simulate` responds `200` for a valid request with the delivery list | tests distinguish non-delivery by `http_status`/log | non-delivery is not visible by the response code | the `GET /api/v1/webhooks` log, the `error` field and `mode` record the result; validation errors give 400/404/413/503 |
 | T-MOCK-03 | The webhook format repeats contract CBL-3.5 (sandbox provider) | single source of the format for Connector and tests | the mock does not check the format on a live gateway | divergence only through updating both specs; real codes - 3.2 |
 | T-MOCK-04 | Recipient redirects are not followed; simulate delivery is detached from the client context (90 s) | the body and signature do not go to a redirect; a client disconnect does not lose the webhook | the `delay` scenario occupies the handler until completion | scenario limits (5 s/10 duplicates) and `WriteTimeout` 75 s are derived together |
-| T-MOCK-05 | Provider limits are emulated by error injection (`fail_status` 429/500/502/503 plus `retry_after_s`), not by implicit counters | deterministic tests; the provider official limits are documented per profile for adapter limiter config | a burst of accepted calls never trips a real leaky bucket on the stand | real limiter behavior is tested on the connector side (kit ratelimit, 17.3); 429 handling paths are exercised deterministically |
+| T-MOCK-05 | Provider limits are emulated by error injection (`fail_status` 400/422 rejections, 429/500/502/503 unavailability plus `retry_after_s`), not by implicit counters | deterministic tests; the provider official limits are documented per profile for adapter limiter config | a burst of accepted calls never trips a real leaky bucket on the stand | real limiter behavior is tested on the connector side (kit ratelimit, 17.3); 429 handling paths are exercised deterministically; the injected 400/422 (17.27) drives the payout compensation scenario |
+| T-MOCK-08 | A created payout starts in `AwaitingApproval`; the stand control `POST /api/v1/payouts/:id/simulate` advances the state (any allowed word may follow any other, the control ignores the failure scenario); the stand never moves funds | the polling path is exercised end to end (submitted -> confirmed) without fund movement; deterministic E2E steps | a test forgetting the simulate step sees a payout staying submitted (runbook); the control is stand-only like `/api/v1/scenarios` |
+| T-MOCK-09 | Pull payments replay by `name` (the connector sends the platform payout id or `refund-<id>`); a payout create is not deduplicated | a connector retry after a lost response cannot orphan a second pull payment | the real API may not dedupe by name (stand aid, same class as T-MOCK-07) |
+| T-MOCK-10 | The `silent` simulate flag updates an invoice without webhooks (empty event id, no deliveries) | models a lost webhook and injects provider-side divergence (amount_mismatch for GE-5) | a silent update is invisible to the platform by design |
+| T-MOCK-11 | The export list renders the same body as the single-invoice read, windows by `createdTime` at unix-second granularity (inclusive) with a deterministic (time, id) sort and a clamped `take`; the same route answers the `orderId` lookup filter | one renderer; the offset cursor walk is stable; the lookup recovery keeps the connector not-found classification (empty array) | the real API clamps `take` differently; the stand clamps at the connector bound 500 |
+| T-MOCK-12 | Payout/refund/export emulation is BTCPay-only; the store list and payouts filter by the caller-provided provider id | the global stand uses BTCPay; other profiles stay invoice-only (additive); a future profile cannot silently reuse the BTCPay wire | a future CoinGate/BitPay payout run needs the same work per profile |
+| T-MOCK-13 | The failure scenario is a single global counter (`fail_next`): invoice calls, payout calls, the export and the payout polling consume it | one simple control (unchanged since 3.6) | on the global stand a reconciler export or a status poll can consume the injected failure before the intended call; the GE-3 step sets the scenario immediately before the payout command and pauses the reconciler export (runbook) |
+| T-MOCK-14 | A payout must be consistent with its pull payment (offered method asset, amount within the held amount); the payout methods array is bounded (`maxPayoutMethods` 10) | the stand cannot hold records the real provider would reject; a body-sized methods array cannot amplify the in-memory store beyond the caps | the real provider validates more (method availability, limits); the stand check is the cheap subset |
 | T-MOCK-06 | BitPay profile checks only the presence of `X-Identity`/`X-Signature`, not the ECDSA signature (the real scheme is a hex DER signature over url plus body with a compressed-key identity) | no secp256k1 dependency in the stand | a wrong request signature is not detected by the mock | real signing is validated offline by the connector unit suite (17.8) and against the BitPay test stand (17.16); the IPN `x-signature` side is fully verified |
 | T-MOCK-07 | The replay map is scoped by provider plus order id | the same order id cannot collide across profiles; adapters can test replay per provider | the stand dedupes by order id even where the real provider does not | documented stand aid; the connector idempotency contract is tested by the conformance suite CONF-9 |
 
@@ -129,6 +160,7 @@ consumer lag; dashboards after task 0.7.
 | CBL-17.8 | 2026-10-17 | done (BitPay profile wire correction found by the 17.8 security review: the official API and SDK key utilities specify decimal major-unit `price`/`amountPaid`, the `merchant/invoice` facade envelope, the required `token` body field, `posData` as the network carrier, a hex DER request signature and a compressed-key `X-Identity`; the profile parse, response shaping, auth presence check and all domain/transport tests were realigned; the connector adapter and fixtures follow in its 17.8 commit) | `.specs/CBL-17.5-provider-profiles.md` (correction section 3.2) | this commit |
 | CBL-17.26 (mock increment 2) | 2026-10-19 | done (BTCPay profile parity found by the M1 run: the invoice body now renders `amountPaid` from the invoice received amount, so the connector fetch-to-verify carries the received evidence; without it the canonical event had no amount and went to the DLQ; unit tests green) | `.specs/CBL-17.5-provider-profiles.md` (correction section 3.2) | this commit |
 | CBL-17.26 (mock increment) | 2026-10-19 | done (CoinGate profile wire parity: the create request accepts the connector's `title`/`description`/`token` fields since 17.26, the real API does too; a parse test with the full connector body (fiat-priced stablecoin order, callback URL, IPN token); unit+vet+lint green) | `.specs/CBL-17.5-provider-profiles.md` (correction section 3.2) | this commit |
+| CBL-17.27 | 2026-10-19 | done, review closed (provider payout, refund and export emulation for the BTCPay profile: the pull payment plus payout wire with the stand state control, the name replay, the refund reuse of the same calls, the store invoice list with the inclusive wire-granularity window, the deterministic paging and the `orderId` lookup of the connector recovery, the silent simulate flag (lost webhook and amount divergence injection), the scenario injection on the payout calls (400/422 rejections) and the payout consistency checks; 4 review passes, findings closed (the methods array bound, the sub-second window boundary, the orderId route shadowing, request `Validate()`, the taxonomy and exemption notes); unit+httptest+e2e green, coverage 88.7% (no regression), lint 0, em dash check green; the pre-existing BitPay e2e helper bug (the facade envelope unwrap, broken since 17.8) fixed; the global GE-2..GE-5 continuation runs follow in the umbrella 17.26 increment D) | `.specs/CBL-17.27-provider-payout-export.md` | this commit |
 
 ## 11. Runbook
 
@@ -151,3 +183,25 @@ Mock-gateway stand diagnostics:
    (the problem `detail` names the field); `400 missing_webhook_target` on simulate for a
    profile means the base URL has no `/hooks/mock/` segment and no explicit env target is
    set.
+
+Payout, refund and export emulation (17.27):
+
+1. A payout stays `submitted` on the platform until the operator advances the stand state:
+   `POST /api/v1/payouts/{id}/simulate {"state":"Completed"}` (or `Cancelled` for the
+   compensation path); the connector polls `GET /api/v1/stores/{store}/payouts/{id}` every
+   `CONNECTOR_PAYOUT_POLL_INTERVAL`. An unknown state word is 400 and leaves the payout
+   unchanged.
+2. A same-name pull payment create replays the original (the connector sends the platform
+   payout id or `refund-<id>`); a second payout create against the same pull payment is a
+   new payout - only the connector-side reference dedupe prevents duplicates.
+3. The payout must match the pull payment: the method asset must be offered and the amount
+   must not exceed the held amount, otherwise 400 `invalid_request` (T-MOCK-14).
+4. The export walk (`GET .../invoices?startDate&endDate&skip&take`) compares at unix-second
+   granularity and answers `[]` past the end; the `orderId` filter without a window serves
+   the connector lookup recovery (an unknown order answers `[]` = not found).
+5. GE-3 sequencing (T-MOCK-13): `fail_next` is one global counter shared with the export
+   and the payout polling; set the scenario immediately before the payout command and
+   pause the reconciler export, otherwise the injected failure may be consumed by a poll.
+6. The silent simulate (`POST /api/v1/simulate {"silent":true,...}`) changes the provider
+   state without a webhook: use it to model a lost webhook or to inject a provider-side
+   amount divergence for the reconciliation alert (GE-5).

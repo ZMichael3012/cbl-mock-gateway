@@ -116,6 +116,7 @@ type simulateRequest struct {
 	DelayMS        int       `json:"delay_ms"`
 	Duplicate      int       `json:"duplicate"`
 	Signature      string    `json:"signature"`
+	Silent         bool      `json:"silent"`
 }
 
 // deliveryDTO describes the result of a single delivery.
@@ -253,6 +254,7 @@ func (s *Server) simulate(c *gin.Context) {
 		DelayMS:        request.DelayMS,
 		Duplicate:      request.Duplicate,
 		Signature:      signature,
+		Silent:         request.Silent,
 	})
 	if err != nil {
 		s.mapError(c, err)
@@ -345,8 +347,12 @@ func (s *Server) mapError(c *gin.Context, err error) {
 		s.abort(c, http.StatusBadRequest, "invalid_request", "Bad Request", err.Error())
 	case errors.Is(err, domain.ErrInvoiceNotFound):
 		s.abort(c, http.StatusNotFound, "invoice_not_found", "Not Found", "invoice not found")
+	case errors.Is(err, domain.ErrPullPaymentNotFound):
+		s.abort(c, http.StatusNotFound, "pull_payment_not_found", "Not Found", "pull payment not found")
+	case errors.Is(err, domain.ErrPayoutNotFound):
+		s.abort(c, http.StatusNotFound, "payout_not_found", "Not Found", "payout not found")
 	case errors.Is(err, domain.ErrStoreFull):
-		s.abort(c, http.StatusServiceUnavailable, "store_full", "Service Unavailable", "invoice store is full")
+		s.abort(c, http.StatusServiceUnavailable, "store_full", "Service Unavailable", "stand store is full")
 	default:
 		s.log.Error("mock-gateway request failed", zap.Error(err))
 		s.abort(c, http.StatusInternalServerError, "internal_error", "Internal Server Error", "")

@@ -121,14 +121,17 @@ func NormalizeSignature(raw string) (SignatureMode, error) {
 // Mock provider field limits: scenarios are bounded by handler budgets
 // (WriteTimeout) and the request body limit (spec NFR).
 const (
-	maxAssetLen   = 16
-	minAssetLen   = 2
-	maxNetworkLen = 32
-	maxTXIDLen    = 128
-	maxLatencyMS  = 5_000
-	maxFailNext   = 100
-	maxDuplicates = 10
-	maxDelayMS    = 5_000
+	maxAssetLen      = 16
+	minAssetLen      = 2
+	maxNetworkLen    = 32
+	maxTXIDLen       = 128
+	maxNameLen       = 128
+	maxAddressLen    = 256
+	maxPayoutMethods = 10
+	maxLatencyMS     = 5_000
+	maxFailNext      = 100
+	maxDuplicates    = 10
+	maxDelayMS       = 5_000
 )
 
 // CreateInvoiceRequest describes an invoice creation request.
@@ -226,6 +229,8 @@ type SimulateRequest struct {
 	Duplicate int
 	// Signature sets the signature mode.
 	Signature SignatureMode
+	// Silent updates the invoice state without any webhook delivery (T-MOCK-10).
+	Silent bool
 }
 
 // Validate checks the fields of the webhook generation request.
@@ -279,7 +284,8 @@ type Scenario struct {
 	// LatencyMS sets the added response latency.
 	LatencyMS int
 	// FailStatus selects the injected status: 0 means 503;
-	// 429, 500, 502 and 503 are allowed.
+	// 400/422 inject the provider rejection class (the payout compensation
+	// scenario, CBL-17.27), 429/500/502/503 the unavailability class.
 	FailStatus int
 	// RetryAfterS sets the Retry-After header value in seconds (429 only).
 	RetryAfterS int
@@ -294,7 +300,7 @@ func (s Scenario) Validate() error {
 		return fmt.Errorf("%w: latency_ms out of range", ErrInvalidRequest)
 	}
 	switch s.FailStatus {
-	case 0, 429, 500, 502, 503:
+	case 0, 400, 422, 429, 500, 502, 503:
 	default:
 		return fmt.Errorf("%w: fail_status %d is not allowed", ErrInvalidRequest, s.FailStatus)
 	}
