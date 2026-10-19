@@ -239,6 +239,7 @@ type btcPayInvoiceResponse struct {
 	ID             string            `json:"id"`
 	StoreID        string            `json:"storeId"`
 	Amount         string            `json:"amount"`
+	AmountPaid     string            `json:"amountPaid"`
 	Currency       string            `json:"currency"`
 	Status         string            `json:"status"`
 	CheckoutLink   string            `json:"checkoutLink"`
@@ -313,6 +314,7 @@ func (p Profile) CreateInvoiceResponse(invoice Invoice) (any, error) {
 			ID:             invoice.GatewayID,
 			StoreID:        standStoreID,
 			Amount:         invoice.Amount.String(),
+			AmountPaid:     invoice.ReceivedAmount.String(),
 			Currency:       invoice.Amount.Asset,
 			Status:         rawStatusOf(invoice),
 			CheckoutLink:   p.checkoutURL(invoice.GatewayID),
@@ -378,6 +380,7 @@ func (p Profile) PaymentResponse(invoice Invoice) (any, error) {
 			ID:             invoice.GatewayID,
 			StoreID:        standStoreID,
 			Amount:         invoice.Amount.String(),
+			AmountPaid:     invoice.ReceivedAmount.String(),
 			Currency:       invoice.Amount.Asset,
 			Status:         rawStatusOf(invoice),
 			CheckoutLink:   p.checkoutURL(invoice.GatewayID),
