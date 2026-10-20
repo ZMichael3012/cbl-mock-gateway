@@ -20,7 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/cbl/cbl-kit/webhooksig"
+	"github.com/ZMichael3012/cbl-kit/webhooksig"
 
 	"github.com/cbl/cbl-mock-gateway/internal/domain"
 	"github.com/cbl/cbl-mock-gateway/internal/transport"

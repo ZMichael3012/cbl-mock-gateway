@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cbl/cbl-kit/money"
+	"github.com/ZMichael3012/cbl-kit/money"
 )
 
 // Payout state words of the Greenfield payout flow; the vocabulary is the

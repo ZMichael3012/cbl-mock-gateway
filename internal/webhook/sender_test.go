@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/cbl/cbl-kit/hmac"
-	"github.com/cbl/cbl-kit/money"
+	"github.com/ZMichael3012/cbl-kit/hmac"
+	"github.com/ZMichael3012/cbl-kit/money"
 
 	"github.com/cbl/cbl-mock-gateway/internal/domain"
 	"github.com/cbl/cbl-mock-gateway/internal/usecase"

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cbl/cbl-kit/hmac"
+	"github.com/ZMichael3012/cbl-kit/hmac"
 
 	"github.com/cbl/cbl-mock-gateway/internal/domain"
 	"github.com/cbl/cbl-mock-gateway/internal/usecase"

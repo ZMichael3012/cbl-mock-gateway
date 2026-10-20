@@ -1,9 +1,9 @@
+github.com/ZMichael3012/cbl-kit v0.0.0-20261020172811-9830b1912eb6 h1:1MxNsEbWjMp4hB8bg9tfvDXj1ycCHJkHHm+pU1z5tQk=
+github.com/ZMichael3012/cbl-kit v0.0.0-20261020172811-9830b1912eb6/go.mod h1:UxcSDtnb8LbJJ2YtFfcuXK951GFA1OfOXxXhJoe1//E=
 github.com/bytedance/sonic v1.11.6 h1:oUp34TzMlL+OY1OUWxHqsdkgC/Zfc85zGqw9siXjrc0=
 github.com/bytedance/sonic v1.11.6/go.mod h1:LysEHSvpvDySVdC2f87zGWf6CIKJcAvqab1ZaiQtds4=
 github.com/bytedance/sonic/loader v0.1.1 h1:c+e5Pt1k/cy5wMveRDyk2X4B9hF4g7an8N3zCYjJFNM=
 github.com/bytedance/sonic/loader v0.1.1/go.mod h1:ncP89zfokxS5LZrJxl5z0UJcsk4M4yY2JpfqGeCtNLU=
-github.com/cbl/cbl-kit v0.0.0-20261020024025-deb4e66f1a90 h1:xOq5qpJdJTYTmYh63SYWn/pwtRw+SxMqSisfIfkCGyI=
-github.com/cbl/cbl-kit v0.0.0-20261020024025-deb4e66f1a90/go.mod h1:wnW40U9nae4FbixkCa7eNGG6DAxkiBMDhcEnOdGx870=
 github.com/cloudwego/base64x v0.1.4 h1:jwCgWpFanWmN8xoIUHa2rtzmkd5J2plF/dnLS6Xd/0Y=
 github.com/cloudwego/base64x v0.1.4/go.mod h1:0zlkT4Wn5C6NdauXdJRhSKRlJvmclQ1hhJgA0rcu/8w=
 github.com/cloudwego/iasm v0.2.0 h1:1KNIy1I1H9hNNFEEH3DVnI4UujN+1zjpuk6gwHLTssg=

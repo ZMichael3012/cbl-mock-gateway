@@ -11,8 +11,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
-	"github.com/cbl/cbl-kit/ginmw"
-	"github.com/cbl/cbl-kit/money"
+	"github.com/ZMichael3012/cbl-kit/ginmw"
+	"github.com/ZMichael3012/cbl-kit/money"
 
 	"github.com/cbl/cbl-mock-gateway/internal/domain"
 	"github.com/cbl/cbl-mock-gateway/internal/usecase"
