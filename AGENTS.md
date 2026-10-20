@@ -119,6 +119,23 @@ webhook signing secrets (stand defaults `mock-nowpayments-secret`, `mock-coingat
 - Godoc docstrings are mandatory in English: the first line starts with the entity name and ends with a period; comments explain why; errors are wrapped with `%w`; panics in business code are forbidden.
 - Commit: `CBL-<epic>.<number>: <short message>`, the spec with the same prefix in the same commit.
 
+Adding a provider profile (CBL-17.22 checklist):
+
+1. Add the `ProfileID` constant and the profile row in `internal/domain/profiles.go`:
+   status tables, auth rule, signature kind and the create/payment wire shape.
+2. Add the route table entry and the parse/response functions; keep the generic handlers
+   and the `raw_status` echo.
+3. Add the signing mode in `internal/webhook/profiles.go` when the provider signs
+   differently; the signature must be computed over the exact provider body.
+4. Add the profile fixture and tests (parse, response shaping, signature, status matrix),
+   then update `TestConnectorProvidersAreEmulated` and the connector `CONNECTOR_<PROVIDER>_*`
+   stand variables.
+5. Update the connector `docs/provider-onboarding.md` and run the profile e2e scenario on
+   the compose stand.
+
+The parity test fails when a connector provider has no profile, which is the intended
+prompt to add one or record the reason (a sandbox-only provider) in the connector spec.
+
 ## 7. SLO and metrics
 
 SLO is being specified in task 14.4. Base metrics: latency p95/p99, error rate, outbox lag,
@@ -158,6 +175,7 @@ consumer lag; dashboards after task 0.7.
 | CBL-16.10 | 2026-10-16 | done (English comments and documentation across the repository: code, tests, configs, the spec, AGENTS.md, README; e2e runs via `test/e2e/E2E.md` with scenario E2E_MockGateway_Smoke, `smoke.ps1` and `make smoke` removed; validation run PASS; coverage unchanged) | `.specs/CBL-16.10-conventions.md` | this commit |
 | CBL-17.5 | 2026-10-17 | done, review closed (provider emulation profiles: five profiles with wire shapes, status tables, auth rules and signatures (canonical JSON HMAC-SHA512 of NOWPayments, token echo of CoinGate, raw HMAC base64 of BitPay, raw HMAC hex with the `sha256=` prefix of BTCPay); generic profile routes in the transport (route table `routesOf`); `webhook.ProfileSender`/`Switch` with `DeriveTarget`; simulate gained `provider`/`raw_status`, the scenario gained `fail_status`/`retry_after_s`; the delivery log carries the provider; in-process e2e scenario E2E_MockGateway_ProviderProfiles and the compose scenario E2E_MockGateway_Profiles; 4 review passes on the staged diff, findings closed: cross-profile reads answer 404 and a mismatched simulate answers 400 `provider_mismatch`, the invalid token echo derives from the secret, ProfileWebhook fails closed on a signing error, legacy problem details translated to English, signature-mode and status-matrix test gaps filled; unit coverage total 88.0%, e2e green, lint 0) | `.specs/CBL-17.5-provider-profiles.md` | this commit |
 | CBL-17.8 | 2026-10-17 | done (BitPay profile wire correction found by the 17.8 security review: the official API and SDK key utilities specify decimal major-unit `price`/`amountPaid`, the `merchant/invoice` facade envelope, the required `token` body field, `posData` as the network carrier, a hex DER request signature and a compressed-key `X-Identity`; the profile parse, response shaping, auth presence check and all domain/transport tests were realigned; the connector adapter and fixtures follow in its 17.8 commit) | `.specs/CBL-17.5-provider-profiles.md` (correction section 3.2) | this commit |
+| CBL-17.22 | 2026-10-20 | done (provider onboarding kit: profile checklist in the development rules and `TestConnectorProvidersAreEmulated` proving every connector real provider has a mock profile; spec in `../cbl-connector/.specs/CBL-17.22-provider-onboarding-kit.md`) | `../cbl-connector/.specs/CBL-17.22-provider-onboarding-kit.md` | this commit |
 | CBL-17.26 (mock increment 2) | 2026-10-19 | done (BTCPay profile parity found by the M1 run: the invoice body now renders `amountPaid` from the invoice received amount, so the connector fetch-to-verify carries the received evidence; without it the canonical event had no amount and went to the DLQ; unit tests green) | `.specs/CBL-17.5-provider-profiles.md` (correction section 3.2) | this commit |
 | CBL-17.26 (mock increment) | 2026-10-19 | done (CoinGate profile wire parity: the create request accepts the connector's `title`/`description`/`token` fields since 17.26, the real API does too; a parse test with the full connector body (fiat-priced stablecoin order, callback URL, IPN token); unit+vet+lint green) | `.specs/CBL-17.5-provider-profiles.md` (correction section 3.2) | this commit |
 | CBL-17.27 | 2026-10-19 | done, review closed (provider payout, refund and export emulation for the BTCPay profile: the pull payment plus payout wire with the stand state control, the name replay, the refund reuse of the same calls, the store invoice list with the inclusive wire-granularity window, the deterministic paging and the `orderId` lookup of the connector recovery, the silent simulate flag (lost webhook and amount divergence injection), the scenario injection on the payout calls (400/422 rejections) and the payout consistency checks; 4 review passes, findings closed (the methods array bound, the sub-second window boundary, the orderId route shadowing, request `Validate()`, the taxonomy and exemption notes); unit+httptest+e2e green, coverage 88.7% (no regression), lint 0, em dash check green; the pre-existing BitPay e2e helper bug (the facade envelope unwrap, broken since 17.8) fixed; the global GE-2..GE-5 continuation runs follow in the umbrella 17.26 increment D) | `.specs/CBL-17.27-provider-payout-export.md` | this commit |
